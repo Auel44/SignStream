@@ -4,7 +4,7 @@
 work. It covers what the project is, what has been built, what was just fixed, and what is
 still broken or unfinished.
 
-**Last updated:** 2026-08-12
+**Last updated:** 2026-08-15
 
 **Provenance note — read this before trusting anything below.** This file merges two sources:
 
@@ -305,8 +305,13 @@ anywhere saying so.
 - **The prior session's Colab fine-tune of Moonshine on AfriSpeech-200 failed** and was
   abandoned mid-way after repeated dataset/script errors. Ghanaian-accent ASR accuracy is
   therefore stock-model quality. Revisiting this is open work. (Reconstructed.)
-- **Not a git repository.** `Asr-signing/` has no version control — there is no history and no
-  undo. `MMS-Player/` *is* a git repo. Initialising git here should be an early action.
+- **Version control, as of 2026-08-15.** The repo is now git-tracked and pushed to
+  https://github.com/Auel44/SignStream. Two things to know about its shape: the 3,180
+  keypoint clips in `dictionary/` are committed deliberately (the datasets they were
+  extracted from no longer exist, so these are the only copy), which makes the repo ~330MB
+  and the first clone slow; and `extension/.env.local` is committed on purpose because a
+  build without it resolves no dictionary URL and the avatar silently never signs. Every
+  other `.env*` is ignored so a real endpoint added later is not published by accident.
 - **Bone-name fragility.** `boneKey()` now absorbs separator differences, but a genuinely
   different skeleton (Mixamo's `mixamorig:LeftHandIndex1`) still needs a new `links` function in
   `rigs.ts`. `Retargeter.missingBones` logs a warning — **do not ignore it**; that warning was
@@ -339,25 +344,40 @@ Measured this session:
 
 ---
 
-## 6. Avatar production pipeline (separate from the extension)
+## 6. Avatar production pipeline (in-repo)
 
-The avatars were **produced**, not downloaded. Relevant sibling directories under
-`C:\Users\asant\Desktop\personal\`:
+The avatars were **produced**, not downloaded, and the whole pipeline now lives in the repo:
 
-- `MMS-Player/` — DFKI's open-source sign-language avatar animation system (GPL-3.0), Python
-  scripts driven through **Blender 4.2.2 LTS**. A local fix is applied in `main.py`: asset
-  paths are anchored to `__file__` because Blender resolves relative paths against the open
-  `.blend`, and in `--background` mode there is none (paths collapsed to `C:ssets\…`).
-  `main.py.orig` is the untouched original.
-- `mms-out/` — FBX output from that pipeline.
-- Blender is installed at `C:\blender-lts\blender-4.2.2-windows-x64\`; the AVASAG corpus at
-  `C:\avasag-corpus\`.
+- `MMS-Player/` — DFKI's open-source sign-language avatar animation system, **GPL-3.0**,
+  Python scripts driven through Blender. Vendored third-party code, not SignStream's:
+  see [MMS-Player/VENDORED.md](MMS-Player/VENDORED.md) for the upstream commit, the licence
+  position, and the one local modification (asset paths anchored to `__file__`, because
+  Blender resolves relative paths against the open `.blend` and `--background` has none).
+  Nothing here runs at extension runtime. A working clone with the upstream remote still
+  sits at `C:\Users\asant\Desktop\personal\MMS-Player` for pulling updates.
+- `mms-out/` — FBX exports and their `textures/`. This is now the working output directory:
+  **point new Blender exports here**, not at the old `personal\mms-out`.
+- Blender is installed at `C:\blender-lts\blender-4.2.23-windows-x64\`; the AVASAG corpus
+  at `C:\avasag-corpus\`.
 
-The three shipped rigs are in `extension/public/`: `avatar.glb` (default), `avatar-man.glb`
-("Kofi"), `avatar-woman.glb` ("Ama"). All three share MakeHuman's "Default simplified"
-skeleton — 126 bones, same naming — so they reuse one rig map. Models are exported
-**without Draco compression on purpose**: DRACOLoader decodes in a Web Worker built from a
-`blob:` URL, and host-page CSP (YouTube's included) blocks that.
+### The four shipped rigs
+
+`extension/public/` holds `avatar-m1`, `avatar-m2`, `avatar-f1`, `avatar-f2` `.glb`, built
+from the `newavatar*.fbx` files in `mms-out/` by the Blender converter. All four share
+MakeHuman's "Default simplified" skeleton — 137 bones — so they reuse one rig map, and each
+was verified before landing: **47/47 mapped bones resolve, 0 missing, rest pose solves to
+0.00 degrees, up-axis tilt 0.0 degrees**, one-handed clips move only the dominant wrist.
+
+Two export rules, both load-bearing:
+
+- **No Draco compression.** DRACOLoader decodes in a Web Worker built from a `blob:` URL, and
+  host-page CSP (YouTube's included) blocks that — the model then fails silently.
+- **PNG textures, not WebP.** WebP is ~30% smaller and was tried, but it writes
+  `EXT_texture_webp` into `extensionsRequired`, so a loader that cannot negotiate it fails
+  outright rather than degrading. It also cannot be verified headlessly without stubbing the
+  support check to say yes. Textures are deduplicated (the FBX importer creates three copies
+  of each) and downscaled instead — 1024 for skin, 512 general, 256 for normals — which
+  brought the models from 23-33 MB each down to ~6 MB.
 
 ---
 
@@ -382,6 +402,10 @@ Asr-signing/
 │                                   trim_clips.py, build_gloss_vocabulary.py, audit_alphabet.py
 ├── dev/                            docker-compose.yml, gateway/, dictionary/nginx.conf,
 │                                   e2e-check.py
+├── MMS-Player/                     VENDORED third-party (GPL-3.0) — avatar authoring
+│                                   tool, see VENDORED.md. Not runtime code.
+├── mms-out/                        FBX exports + textures/ that the .glb rigs are
+│                                   built from. New Blender exports go here.
 └── extension/
     ├── manifest.json               MV3
     ├── .env.local                  points at the local dev stack
