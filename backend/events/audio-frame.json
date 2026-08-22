@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signstream.app/events/v1/audio-frame.json",
+  "title": "AudioFrame",
+  "description": "One 250 ms PCM audio frame in transit between the ws-audio-ingest Lambda and the asr Lambda via the SQS audio-queue. The frame is the raw output of the offscreen capture in the browser extension: contiguous (non-overlapping) Int16 little-endian PCM at 16 kHz mono.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["connectionId", "sequence", "language", "frame", "capturedAt"],
+
+  "properties": {
+    "connectionId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "API Gateway WebSocket connection ID identifying the originating client session. Used downstream to push transcripts and sign IDs back to the same client."
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic per-session frame sequence number, starting at 0 when capture begins. Allows the asr Lambda to detect gaps and ordering issues."
+    },
+    "language": {
+      "type": "string",
+      "enum": ["ASL", "BSL", "GhSL"],
+      "description": "Target sign language at the time of capture. The asr Lambda is language-agnostic for input (audio is always English) but tags the transcript so text-to-gloss picks the correct dictionary."
+    },
+    "frame": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "minLength": 1,
+      "description": "Base64-encoded Int16 little-endian PCM. Exactly 4000 samples (8000 bytes) representing 250 ms at 16 kHz mono."
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp recorded by the client at the moment the frame was emitted. Used for end-to-end latency measurement."
+    }
+  },
+
+  "examples": [
+    {
+      "connectionId": "c2VxLTAwMDAxLXdzLWNvbm5lY3Rpb24",
+      "sequence": 0,
+      "language": "ASL",
+      "frame": "AAA= (truncated base64 of 8000 PCM bytes)",
+      "capturedAt": "2026-05-28T14:23:17.412Z"
+    }
+  ]
+}

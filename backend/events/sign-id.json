@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signstream.app/events/v1/sign-id.json",
+  "title": "SignId",
+  "description": "Sign identifier event published by the text-to-gloss Lambda onto the signstream-bus EventBridge bus with detail-type 'signstream.signId'. One event per sign to play. The primary delivery path of sign IDs back to the client is direct push through the API Gateway management API; this event is an internal fan-out for analytics, observability, and any future side-channel consumers.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["connectionId", "language", "signId", "publishedAt"],
+
+  "properties": {
+    "connectionId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "API Gateway WebSocket connection ID of the originating client session."
+    },
+    "language": {
+      "type": "string",
+      "enum": ["ASL", "BSL", "GhSL"],
+      "description": "Target sign language. Must match the language prefix of signId."
+    },
+    "signId": {
+      "type": "string",
+      "pattern": "^(asl|bsl|ghsl)-[a-z0-9_-]+-v[0-9]+$",
+      "description": "Stable dictionary key in the format <language>-<gloss-slug>-<version>. Versioning lets the dictionary improve a pose clip without invalidating client caches of older clips. Example: asl-hello-v1."
+    },
+    "gloss": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. The canonical gloss (uppercased, hyphenated) the sign was mapped from, e.g. HELLO, THANK-YOU. Useful for debugging when a sign ID is not playing as expected."
+    },
+    "sourceText": {
+      "type": "string",
+      "description": "Optional. The original transcript fragment that produced this sign. Useful for end-to-end traceability in observability tools."
+    },
+    "publishedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp when text-to-gloss emitted this event."
+    },
+    "transcriptPublishedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional. publishedAt of the transcript event this sign was derived from. Pair with publishedAt to measure text-to-gloss latency."
+    }
+  },
+
+  "examples": [
+    {
+      "connectionId": "c2VxLTAwMDAxLXdzLWNvbm5lY3Rpb24",
+      "language": "ASL",
+      "signId": "asl-hello-v1",
+      "gloss": "HELLO",
+      "sourceText": "hello world",
+      "publishedAt": "2026-05-28T14:23:18.812Z",
+      "transcriptPublishedAt": "2026-05-28T14:23:18.612Z"
+    }
+  ]
+}

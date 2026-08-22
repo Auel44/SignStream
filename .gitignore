@@ -1,0 +1,41 @@
+# ── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Build output ────────────────────────────────────────────────────────────
+# The loadable extension is built with `npm run build` in extension/.
+dist/
+*.tsbuildinfo
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── Datasets ────────────────────────────────────────────────────────────────
+# Large, re-downloadable, and never versioned — see data/datasets/README.md.
+# The keypoint clips extracted FROM them live in dictionary/ and ARE tracked,
+# because they are the deliverable and the source datasets are no longer held.
+data/datasets/
+data/raw/
+data/processed/
+
+# ── Superseded clip backups ─────────────────────────────────────────────────
+# Written by pose-generator/src/trim_clips.py before it removes the dead air at
+# the head and tail of each recording. 2,625 files, 246MB of pre-trim copies;
+# the trimmed clip beside each one is what the avatar actually plays.
+*.orig
+
+# ── Local environment ───────────────────────────────────────────────────────
+# extension/.env.local is committed on purpose: it holds only localhost
+# endpoints, and without it a fresh build resolves no dictionary URL at all, so
+# the avatar loads but never signs. Anything else env-shaped stays out, so a
+# real endpoint or key added later is not published by accident.
+.env
+.env.*
+!.env.local
+
+# ── OS / editor noise ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp

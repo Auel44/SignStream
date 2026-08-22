@@ -1,0 +1,7 @@
+# Runtime dependencies for the text-to-gloss Lambda.
+#
+# No ML libraries — this function is a normaliser + dictionary lookup +
+# EventBridge/API Gateway client. boto3 is on the Lambda base image but is
+# pinned here so local testing matches production.
+
+boto3>=1.34,<2

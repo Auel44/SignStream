@@ -1,0 +1,6 @@
+# Runtime dependencies for the health-warmer Lambda.
+#
+# boto3 is already on the Lambda base image; pinned here so local testing
+# matches production.
+
+boto3>=1.34,<2

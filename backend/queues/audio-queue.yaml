@@ -1,0 +1,41 @@
+# SignStream audio-queue manifest.
+# Terraform: ../infrastructure/stacks/async/queues.tf
+
+name: signstream-{env}-audio-queue
+purpose: >
+  Carries every 250 ms PCM audio frame captured from a browser tab. The
+  ws-audio-ingest Lambda enqueues one message per frame; the asr Lambda
+  drains them at 16 kHz mono and produces streaming transcripts.
+
+producers:
+  - lambda: ws-audio-ingest
+    action: sqs:SendMessage
+    frequency_per_user: ~4 messages/second (one per 250 ms frame)
+
+consumers:
+  - lambda: asr
+    action: sqs:ReceiveMessage + sqs:DeleteMessage
+    batch_size: 1
+    partial_failure_reporting: true    # returns batchItemFailures
+    concurrency: unbounded (SQS event source auto-scales)
+
+message_body_schema: ../events/audio-frame.json
+
+retention_seconds: 14400              # 4 hours — audio older than this is stale
+visibility_timeout_seconds: 60        # must exceed asr Lambda timeout (30 s)
+max_receive_count: 3                  # retry a message 3 times before DLQ
+dead_letter_target: audio-dlq
+
+encryption:
+  at_rest: SQS-managed (SSE-SQS)      # default; upgrade to KMS if needed
+  in_transit: TLS (HTTPS SendMessage / ReceiveMessage)
+
+notes: |
+  * The message body is JSON (per the audio-frame schema) whose `frame`
+    field is base64-encoded Int16 PCM. Do NOT send raw binary — SQS
+    accepts binary only via message attributes, not the body.
+  * Ordering is best-effort. If strict per-connection ordering ever
+    becomes a requirement, migrate to an SQS FIFO queue with the
+    connectionId as the MessageGroupId.
+  * Cost at demo scale (5 concurrent users, 30 min/day) stays inside the
+    always-free 1 million requests / month tier.

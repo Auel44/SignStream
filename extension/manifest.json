@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "SignStream",
+  "version": "0.1.0",
+  "description": "Real-time one-way audio-to-sign-language interpretation for streaming media (ASL / BSL / GhSL).",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabCapture",
+    "offscreen"
+  ],
+  "action": {
+    "default_title": "SignStream",
+    "default_popup": "src/popup/index.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/content/content.ts"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "avatar-m1.glb",
+        "avatar-m2.glb",
+        "avatar-f1.glb",
+        "avatar-f2.glb",
+        "src/offscreen/pcm-worklet.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

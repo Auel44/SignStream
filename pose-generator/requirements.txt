@@ -1,0 +1,7 @@
+# Pose extraction: video → dictionary JSON.
+#
+# Runs offline on a dev machine. Not consumed by any Lambda.
+
+mediapipe>=0.10.14,<0.11
+opencv-python>=4.10,<5
+numpy>=1.26,<3

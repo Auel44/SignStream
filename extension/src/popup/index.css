@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Shell sizing and typography live in popup.css, which main.tsx imports after
+ * this file so the design tokens win over Tailwind's preflight.
+ */

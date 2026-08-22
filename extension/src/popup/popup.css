@@ -1,0 +1,1420 @@
+/*
+ * SignStream popup — "Web Extension Audio Translator" design.
+ *
+ * The design is specified in oklch with a warm-neutral base and a terracotta
+ * accent. Tokens live here as custom properties so the accent can be re-themed
+ * in one place, and so the component file stays markup rather than style
+ * strings.
+ */
+
+:root {
+  --accent: oklch(0.58 0.13 42);
+  --accent-hover: oklch(0.52 0.13 42);
+  --accent-soft: oklch(0.955 0.025 55);
+  --accent-ink: oklch(0.99 0.005 80);
+
+  --surface: oklch(0.985 0.006 80);
+  --surface-raised: oklch(0.99 0.004 80);
+  --surface-sunken: oklch(0.975 0.008 80);
+  --surface-page: oklch(0.97 0.008 80);
+  --chip: oklch(0.94 0.008 78);
+  --chip-hover: oklch(0.9 0.01 78);
+
+  --border: oklch(0.9 0.012 78);
+  --border-soft: oklch(0.93 0.01 78);
+  --border-strong: oklch(0.88 0.012 78);
+
+  --ink: oklch(0.26 0.014 62);
+  --ink-strong: oklch(0.28 0.014 62);
+  --ink-body: oklch(0.48 0.015 65);
+  --ink-muted: oklch(0.55 0.015 65);
+  --ink-faint: oklch(0.62 0.02 68);
+  --ink-label: oklch(0.58 0.02 65);
+
+  --ok: oklch(0.62 0.11 155);
+  --warn: oklch(0.65 0.13 55);
+
+  --font-display: "Outfit", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* ── Surface sizing ──────────────────────────────────────────────────────
+   The same markup renders on two surfaces:
+
+     popup  — the panel Chrome shows under the toolbar icon. Chrome sizes the
+              popup to the document and caps it at 800x600.
+
+              Only the WIDTH is fixed. Pinning the height too was a mistake: a
+              document exactly as tall as the cap overflows by a hair, Chrome
+              adds a vertical scrollbar, that scrollbar eats ~15px of the fixed
+              800px width, and a horizontal scrollbar appears in turn — which is
+              what clipped the Connect button and the toggles. Height is left to
+              the content and simply bounded, so the popup is never larger than
+              its own document and no scrollbar is ever forced.
+     tab    — first-run onboarding, which cannot be a popup (an extension can't
+              open its own). Here a fixed width would leave the panel as a strip
+              pinned to the left of a full-width tab, so the width is released
+              and the panel is centred instead.
+
+   `data-surface` is set by main.tsx before React mounts. */
+html,
+body {
+  margin: 0;
+  width: 400px;
+  background: var(--surface-page);
+  font-family: var(--font-body);
+  color: var(--ink);
+}
+
+body[data-surface="tab"] {
+  width: 100%;
+  height: auto;
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 32px 16px;
+}
+
+body[data-surface="tab"] .panel {
+  width: 100%;
+  max-width: 460px;
+  height: auto;
+  max-height: none;
+}
+
+/* ── Animations ─────────────────────────────────────────────────────────── */
+
+@keyframes sig-rise {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel,
+  .step,
+  .meter-bar {
+    animation: none !important;
+  }
+}
+
+/* ── Panel shell ────────────────────────────────────────────────────────── */
+
+.panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow:
+    0 24px 60px -22px oklch(0.5 0.03 60 / 0.28),
+    0 0 0 1px oklch(0.92 0.01 75);
+  animation: panel-in 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  max-height: 300px;
+  /* Square in the popup: the panel IS the window there, so rounding it only
+     exposes the page colour behind. The tab surface restores the card below. */
+  border-radius: 0;
+}
+
+body[data-surface="tab"] .panel {
+  border-radius: 26px;
+}
+
+.chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brand-mark span {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: var(--surface);
+}
+
+.brand-name {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: oklch(0.5 0.02 65);
+}
+
+.chrome-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 9px;
+  background: var(--chip);
+  color: oklch(0.45 0.02 65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+}
+
+.icon-btn:hover {
+  background: var(--chip-hover);
+}
+
+.icon-btn.is-active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.icon-btn .gear {
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+}
+
+/* ── Progress ───────────────────────────────────────────────────────────── */
+
+.progress {
+  /* Aligned with the 16px chrome/footer gutter, and tightened vertically: on a
+     300px panel the wizard has ~160px for its actual content. */
+  padding: 10px 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.progress-track {
+  display: flex;
+  gap: 6px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: oklch(0.91 0.012 78);
+  transition: background 0.3s;
+}
+
+.progress-bar.is-done {
+  background: var(--accent);
+}
+
+.progress-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.progress-step {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-label);
+}
+
+.progress-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: oklch(0.68 0.015 65);
+}
+
+/* ── Body ───────────────────────────────────────────────────────────────── */
+
+/* Every scrollable region shares this shape: grow into whatever the panel has
+   left, never force the panel taller, scroll internally.
+
+   `min-height: 0` is the load-bearing part. A flex item's default minimum is
+   its content size, so without it the region refuses to shrink, pushes the
+   panel past its max-height, and the footer — with the primary button in it —
+   is pushed out of the popup entirely.
+
+   This replaces a set of hand-computed `max-height` values. Those have to be
+   re-derived by hand every time the chrome or footer padding changes, and the
+   arithmetic was already wrong: the regions were capped at 190px while only
+   179px was actually free, so the layout overflowed by 11px. Letting flex
+   measure it is correct by construction. */
+.body,
+.settings-menu,
+.settings-page,
+.wizard-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.body {
+  padding: 16px 18px;
+}
+
+/* The tab surface has no cap, so the panel simply grows to its content and
+   nothing needs to scroll internally. */
+body[data-surface="tab"] .body,
+body[data-surface="tab"] .wizard-body,
+body[data-surface="tab"] .settings-menu,
+body[data-surface="tab"] .settings-page {
+  overflow-y: visible;
+}
+
+.step {
+  animation: step-in 0.32s ease-out both;
+}
+
+/* Sized for the popup, where only ~190px of height is free once the chrome,
+   progress bar and footer are accounted for. A 27px display title with a 22px
+   lede margin spent a third of that on the heading alone, leaving the actual
+   controls below the fold on every step. The tab surface, which has room,
+   restores the larger setting below. */
+.title {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.lede {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-body);
+  text-wrap: pretty;
+}
+
+body[data-surface="tab"] .title {
+  margin-bottom: 10px;
+  font-size: 27px;
+}
+
+body[data-surface="tab"] .lede {
+  margin-bottom: 22px;
+  font-size: 14.5px;
+}
+
+.section-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: oklch(0.36 0.015 62);
+  margin-bottom: 9px;
+}
+
+/* ── Audio meter ────────────────────────────────────────────────────────── */
+
+.meter-card {
+  border-radius: 18px;
+  background: oklch(0.955 0.012 80);
+  border: 1px solid oklch(0.91 0.012 78);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.meter {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 5px;
+  height: 46px;
+}
+
+.meter-bar {
+  width: 6px;
+  border-radius: 999px;
+  background: oklch(0.87 0.012 78);
+  height: 6px;
+}
+
+.meter-bar.is-live {
+  background: var(--accent);
+  transform-origin: bottom;
+  animation: sig-rise 0.9s ease-in-out infinite;
+}
+
+.meter-caption {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.meter-caption.is-live {
+  color: var(--accent);
+}
+
+/* ── Permission banner ──────────────────────────────────────────────────── */
+
+.banner {
+  border-radius: 16px;
+  padding: 16px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  transition: all 0.3s;
+}
+
+.banner.is-granted {
+  background: oklch(0.965 0.03 155);
+  border-color: oklch(0.85 0.06 155);
+}
+
+.banner.is-denied {
+  background: oklch(0.97 0.03 60);
+  border-color: oklch(0.87 0.07 65);
+}
+
+.banner-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.banner-icon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--ink-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.banner.is-granted .banner-icon {
+  background: var(--ok);
+}
+
+.banner.is-denied .banner-icon {
+  background: var(--warn);
+}
+
+.banner-icon span {
+  width: 8px;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.banner-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink-strong);
+}
+
+.banner-body {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-muted);
+  margin-top: 3px;
+}
+
+.banner-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+
+.btn {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 12px;
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: oklch(0.42 0.02 65);
+  transition: background 0.2s;
+}
+
+.btn:hover:not(:disabled) {
+  background: oklch(0.96 0.008 78);
+}
+
+.btn-primary {
+  border: none;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-primary:disabled {
+  background: oklch(0.9 0.012 78);
+  color: oklch(0.68 0.015 65);
+  cursor: not-allowed;
+}
+
+.btn-grow {
+  flex: 1;
+}
+
+.btn-grow-wide {
+  flex: 1.4;
+}
+
+/* ── Selectable rows (language, contrast) ───────────────────────────────── */
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 14px;
+  min-height: 62px;
+  border-radius: 15px;
+  cursor: pointer;
+  background: var(--surface-sunken);
+  border: 1.5px solid var(--border);
+  transition:
+    background 0.2s,
+    border-color 0.2s;
+}
+
+.row.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.row input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.row:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.row-abbr {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  background: oklch(0.93 0.012 78);
+  color: oklch(0.42 0.02 65);
+}
+
+.row-abbr.is-long {
+  font-size: 12px;
+}
+
+.row.is-selected .row-abbr {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.row-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.row-sub {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  margin-top: 2px;
+}
+
+.row-dot {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 999px;
+  border: 1.5px solid oklch(0.82 0.012 78);
+  background: transparent;
+}
+
+.row.is-selected .row-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 3.5px var(--surface);
+}
+
+.row-swatch {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 11px;
+  border: 1px solid oklch(0.85 0.012 78);
+}
+
+/* ── Note callout ───────────────────────────────────────────────────────── */
+
+.note {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: oklch(0.96 0.02 190);
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.note-rule {
+  width: 4px;
+  align-self: stretch;
+  border-radius: 999px;
+  background: oklch(0.62 0.09 195);
+  flex: none;
+}
+
+.note-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: oklch(0.38 0.04 210);
+}
+
+/* ── Avatar preview ─────────────────────────────────────────────────────── */
+
+.preview {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background-image: repeating-linear-gradient(
+    135deg,
+    oklch(0.95 0.01 78) 0 10px,
+    oklch(0.925 0.01 78) 10px 20px
+  );
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.preview-label {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.preview-avatar {
+  position: absolute;
+  aspect-ratio: 3 / 4;
+  border-radius: 9px;
+  border: 2px solid oklch(1 0 0 / 0.75);
+  box-shadow: 0 6px 16px -6px oklch(0.2 0.02 60 / 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.preview-avatar span {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-align: center;
+}
+
+.preview-summary {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: oklch(0.6 0.02 68);
+  margin-bottom: 20px;
+}
+
+/* ── Chips (position / size) ────────────────────────────────────────────── */
+
+.chip-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.chip-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.chip {
+  flex: 1;
+  min-height: 46px;
+  padding: 0 12px;
+  border-radius: 13px;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 500;
+  background: var(--surface-sunken);
+  color: oklch(0.34 0.015 62);
+  border: 1.5px solid var(--border);
+  transition: all 0.2s;
+}
+
+.chip.is-selected {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.chip.is-compact {
+  min-height: 40px;
+  padding: 0 10px;
+  border-radius: 11px;
+  font-size: 12.5px;
+}
+
+/* ── Step 4 summary ─────────────────────────────────────────────────────── */
+
+.done-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--ok);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+.done-mark span {
+  width: 16px;
+  height: 9px;
+  border-left: 2.5px solid var(--accent-ink);
+  border-bottom: 2.5px solid var(--accent-ink);
+  transform: rotate(-45deg) translateY(-2px);
+}
+
+.summary {
+  border-radius: 18px;
+  border: 1px solid oklch(0.91 0.012 78);
+  overflow: hidden;
+}
+
+.summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.summary-row:nth-child(even) {
+  background: var(--surface-sunken);
+}
+
+.summary-row:last-child {
+  border-bottom: none;
+}
+
+.summary-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-label);
+}
+
+.summary-value {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink);
+  text-align: right;
+}
+
+.link-btn {
+  margin-top: 14px;
+  width: 100%;
+  min-height: 44px;
+  border-radius: 13px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: oklch(0.4 0.02 65);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  background: oklch(0.96 0.008 78);
+}
+
+/* ── Settings view ──────────────────────────────────────────────────────── */
+
+.audio-card {
+  border-radius: 15px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.audio-card.is-live {
+  border-color: oklch(0.87 0.05 155);
+  background: oklch(0.972 0.025 155);
+}
+
+.mini-meter {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 22px;
+  flex: none;
+}
+
+.mini-meter .meter-bar {
+  width: 4px;
+  height: 4px;
+}
+
+.audio-card-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.audio-card-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--ink-strong);
+}
+
+.audio-card-body {
+  font-size: 12px;
+  color: var(--ink-muted);
+  margin-top: 2px;
+}
+
+.audio-btn {
+  min-height: 36px;
+  padding: 0 13px;
+  border-radius: 11px;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  font-weight: 600;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-ink);
+  flex: none;
+}
+
+.audio-card.is-live .audio-btn {
+  border: 1px solid oklch(0.86 0.03 155);
+  background: oklch(0.995 0.003 80);
+  color: oklch(0.42 0.06 155);
+}
+
+.compact-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.row.is-compact {
+  gap: 11px;
+  padding: 9px 12px;
+  min-height: 50px;
+  border-radius: 13px;
+}
+
+.row.is-compact .row-abbr {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  font-size: 11.5px;
+}
+
+.row.is-compact .row-abbr.is-long {
+  font-size: 10.5px;
+}
+
+.row.is-compact .row-title {
+  font-size: 13.5px;
+}
+
+.toggle-group {
+  border-radius: 15px;
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.toggle-row:last-child {
+  border-bottom: none;
+}
+
+.toggle-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.toggle-label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--ink-strong);
+}
+
+.toggle-desc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-muted);
+  margin-top: 2px;
+}
+
+.toggle {
+  width: 44px;
+  height: 26px;
+  flex: none;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  padding: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  background: oklch(0.88 0.012 78);
+  transition: background 0.22s;
+}
+
+.toggle.is-on {
+  justify-content: flex-end;
+  background: var(--accent);
+}
+
+.toggle span {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: oklch(0.995 0.003 80);
+  box-shadow: 0 1px 3px oklch(0.3 0.02 60 / 0.3);
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--accent);
+  height: 22px;
+  cursor: pointer;
+}
+
+.slider-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.slider-value {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+
+.footer {
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface-sunken);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.footer .btn {
+  min-height: 38px;
+  border-radius: 11px;
+  font-size: 13.5px;
+}
+
+.footer .btn-primary {
+  flex: 1;
+  padding: 0 18px;
+}
+
+.footer .btn-back {
+  padding: 0 18px;
+}
+
+.error-note {
+  margin-top: 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: oklch(0.5 0.13 30);
+}
+
+/* ── Settings screen ────────────────────────────────────────────────────── */
+
+.settings-chrome {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+/* ── Settings: drill-down ────────────────────────────────────────────────
+   A menu of sections, each opening its own page with a back arrow.
+
+   A sidebar was tried first and does not survive at this width: 400px minus a
+   readable nav column leaves too little for the controls themselves. The
+   drill-down keeps every page full-width, which is what the option rows,
+   sliders and swatches actually need, and still gives one short page per
+   section rather than one long scroll. */
+
+.settings-menu {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menu-item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.menu-item:hover {
+  background: var(--chip);
+}
+
+.menu-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.menu-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.menu-blurb {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-chevron {
+  color: var(--ink-faint);
+  font-size: 15px;
+  flex: none;
+}
+
+.settings-page {
+  padding: 14px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.wizard-body {
+  padding: 16px 18px;
+}
+
+/* ── Status page ─────────────────────────────────────────────────────────
+   One row per pipeline stage, in the order audio actually flows through them,
+   so the first row showing nothing is the stage at fault. */
+
+.status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--surface);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--ink-faint);
+}
+
+.status-dot.is-ok {
+  background: var(--ok);
+}
+
+.status-label {
+  flex: 1;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.status-value {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+.status-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+.status-meta-key {
+  color: var(--ink-label);
+  margin-right: 6px;
+}
+
+.status-transcript {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-empty {
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.title-sm {
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+
+.lede-sm {
+  margin-bottom: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: oklch(0.52 0.015 65);
+}
+
+.saved-pill {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--chip);
+  color: oklch(0.5 0.02 65);
+  transition: all 0.3s;
+}
+
+.saved-pill.is-saved {
+  background: oklch(0.95 0.05 155);
+  color: oklch(0.42 0.09 155);
+}
+
+.group-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-label);
+  margin-bottom: 10px;
+}
+
+.group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.group-label-inline {
+  margin-bottom: 0;
+}
+
+.group-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: oklch(0.42 0.02 65);
+}
+
+.section-note {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.note-tight {
+  margin-top: 10px;
+  padding: 13px 14px;
+  align-items: stretch;
+}
+
+.preview.is-compact {
+  border-radius: 14px;
+  margin-bottom: 10px;
+}
+
+.preview-avatar.is-plateless {
+  border: 1.5px dashed oklch(0.99 0.005 80 / 0.8);
+}
+
+.chip-grid-tight {
+  gap: 7px;
+  margin-bottom: 8px;
+}
+
+.chip-row-tight {
+  gap: 7px;
+  margin-bottom: 0;
+}
+
+.row.is-tight {
+  gap: 11px;
+  padding: 11px 13px;
+  min-height: 56px;
+  border-radius: 14px;
+}
+
+.row-swatch.is-sm {
+  width: 34px;
+  height: 34px;
+}
+
+/* Backdrop picker */
+
+.backdrop-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 7px;
+}
+
+.backdrop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 4px;
+  border-radius: 12px;
+  cursor: pointer;
+  background: var(--surface-sunken);
+  border: 1.5px solid var(--border);
+  color: oklch(0.42 0.02 65);
+  transition: all 0.2s;
+}
+
+.backdrop.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: oklch(0.34 0.05 45);
+}
+
+.backdrop-swatch {
+  width: 100%;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid oklch(0.85 0.012 78);
+}
+
+.backdrop-swatch.is-none {
+  background: repeating-linear-gradient(
+    135deg,
+    oklch(0.93 0.01 78) 0 5px,
+    oklch(0.87 0.01 78) 5px 10px
+  );
+}
+
+.backdrop-label {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* Privacy table */
+
+.privacy {
+  border-radius: 15px;
+  border: 1px solid oklch(0.91 0.012 78);
+  overflow: hidden;
+}
+
+.privacy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.privacy-row:nth-child(even) {
+  background: var(--surface-sunken);
+}
+
+.privacy-row:last-child {
+  border-bottom: none;
+}
+
+.privacy-label {
+  font-size: 13px;
+  color: oklch(0.4 0.015 65);
+}
+
+.privacy-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: oklch(0.3 0.014 62);
+  text-align: right;
+}
+
+.btn-danger {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 13px;
+  border: 1px solid oklch(0.88 0.04 30);
+  background: var(--surface-raised);
+  color: oklch(0.52 0.13 30);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn-danger:hover {
+  background: oklch(0.97 0.02 30);
+}

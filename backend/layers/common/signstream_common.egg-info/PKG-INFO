@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: signstream_common
+Version: 0.1.0
+Summary: Shared helpers used across every SignStream Lambda.
+Requires-Python: >=3.11
+Requires-Dist: boto3<2,>=1.34
+Provides-Extra: test
+Requires-Dist: pytest<9,>=8.0; extra == "test"
+Requires-Dist: boto3<2,>=1.34; extra == "test"

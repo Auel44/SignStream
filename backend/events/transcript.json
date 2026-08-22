@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signstream.app/events/v1/transcript.json",
+  "title": "Transcript",
+  "description": "Transcript event published by the asr Lambda onto the signstream-bus EventBridge bus with detail-type 'signstream.transcript'. Carries one incremental partial transcript or one finalised segment. The text-to-gloss Lambda subscribes and reacts to finalised segments; partials are also pushed directly to the WebSocket client so captions appear live.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["connectionId", "language", "text", "isFinal", "publishedAt"],
+
+  "properties": {
+    "connectionId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "API Gateway WebSocket connection ID of the originating client session. Carried so downstream stages can push their results back to the same client without an extra lookup."
+    },
+    "language": {
+      "type": "string",
+      "enum": ["ASL", "BSL", "GhSL"],
+      "description": "Target sign language. Determines which per-language dictionary text-to-gloss will use."
+    },
+    "text": {
+      "type": "string",
+      "minLength": 0,
+      "description": "The transcript text. Always English. May be empty in the case of a silence-detection finalisation with no recognised words."
+    },
+    "isFinal": {
+      "type": "boolean",
+      "description": "True when this is a finalised segment that will not be revised by later partials. text-to-gloss should only react to finals; partials are for live caption display."
+    },
+    "publishedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp when the asr Lambda emitted this event."
+    },
+    "firstFrameSequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional. Sequence number of the first audio frame that contributed to this transcript segment. Useful for latency analytics."
+    },
+    "lastFrameSequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional. Sequence number of the last audio frame that contributed to this segment."
+    },
+    "asrModel": {
+      "type": "string",
+      "enum": ["stub", "moonshine", "moonshine-african", "parakeet-tdt-streaming"],
+      "description": "Optional. Identifier of the ASR model that produced this transcript. Useful when comparing models during evaluation."
+    }
+  },
+
+  "examples": [
+    {
+      "connectionId": "c2VxLTAwMDAxLXdzLWNvbm5lY3Rpb24",
+      "language": "ASL",
+      "text": "hello",
+      "isFinal": false,
+      "publishedAt": "2026-05-28T14:23:18.105Z",
+      "firstFrameSequence": 0,
+      "lastFrameSequence": 3
+    },
+    {
+      "connectionId": "c2VxLTAwMDAxLXdzLWNvbm5lY3Rpb24",
+      "language": "ASL",
+      "text": "hello world",
+      "isFinal": true,
+      "publishedAt": "2026-05-28T14:23:18.612Z",
+      "firstFrameSequence": 0,
+      "lastFrameSequence": 8,
+      "asrModel": "parakeet-tdt-streaming"
+    }
+  ]
+}

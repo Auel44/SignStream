@@ -1,0 +1,42 @@
+# Fine-tune Moonshine on AfriSpeech-200 and export the result to ONNX for the
+# asr Lambda.
+#
+# GPU recommended for training — see README.md for free options. Moonshine is
+# small, so any free-tier GPU (Kaggle P100/T4, Colab T4) is plenty.
+#
+# ── Colab / Kaggle note ─────────────────────────────────────────────────────
+# Colab and Kaggle already ship recent torch, torchaudio, datasets,
+# transformers, huggingface_hub, numpy, soundfile and librosa. Installing this
+# file wholesale can DOWNGRADE those and upset the notebook's other pre-installed
+# packages (torchvision, tensorflow, gradio). On a hosted notebook, prefer to
+# install only the extras it lacks and leave its base stack alone:
+#
+#     pip install -q useful-moonshine jiwer evaluate onnx onnxruntime
+#
+# Use the full list below only in a clean local virtualenv.
+# ────────────────────────────────────────────────────────────────────────────
+
+# Moonshine model + training code (from the Useful Sensors repo).
+# NOTE: verify the current install target against the Moonshine repo. The
+# training package is the Torch/Keras build; the runtime Lambda uses the
+# separate `useful-moonshine-onnx` package.
+useful-moonshine
+
+# Training + evaluation stack. Lower bounds only — no upper caps — so these do
+# not force downgrades of a notebook's newer pre-installed versions.
+torch>=2.2
+torchaudio>=2.2
+evaluate>=0.4
+jiwer>=3.0                       # WER metric
+# AfriSpeech-200 is a SCRIPT-based dataset. datasets >= 3.0 removed support for
+# dataset loading scripts, so it MUST be pinned below 3.0 or load_dataset fails
+# with "Dataset scripts are no longer supported". This is the one dependency we
+# deliberately cap.
+datasets>=2.20,<3.0
+huggingface_hub>=0.24
+soundfile>=0.12
+librosa>=0.10
+
+# ONNX export + runtime check.
+onnx>=1.16
+onnxruntime>=1.18

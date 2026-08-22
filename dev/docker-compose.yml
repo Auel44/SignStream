@@ -1,0 +1,68 @@
+# Local end-to-end stack: audio in → transcript + sign ids out → clips served.
+#
+#   docker compose -f dev/docker-compose.yml up --build
+#
+# Then load extension/dist/ as an unpacked extension. It already defaults to
+# ws://localhost:8080; set VITE_DICTIONARY_BASE_URL=http://localhost:8081 at
+# build time (or paste it into the extension's Settings screen).
+
+name: signstream-dev
+
+services:
+  gateway:
+    build:
+      # Context is the repo root so the Lambda source trees can be mounted from
+      # it — the gateway imports the real asr_engine / mapper / normaliser
+      # rather than reimplementing the pipeline.
+      context: ..
+      dockerfile: dev/gateway/Dockerfile
+      args:
+        # moonshine/tiny keeps the image small and CPU-fast; production uses
+        # moonshine/base. Swap to `stub` at runtime via ASR_MODEL to test the
+        # full pipeline with canned transcripts and no model at all.
+        ASR_MOONSHINE_MODEL: moonshine/tiny
+    ports:
+      - "8080:8080"
+    environment:
+      # `stub` drives the pipeline from audio activity with canned sentences —
+      # the fastest way to confirm the avatar signs. `moonshine` transcribes
+      # for real.
+      # Defaults to real transcription. It used to default to `stub`, and that
+      # was a trap: any `docker compose up` that forgot the env var silently
+      # swapped Moonshine for canned sentences, which look exactly like a
+      # working transcript until you notice they never match the video.
+      #
+      # `stub` is still available for UI work — it needs no model and responds
+      # instantly — but it must now be asked for explicitly:
+      #     ASR_MODEL=stub docker compose -f dev/docker-compose.yml up -d
+      ASR_MODEL: ${ASR_MODEL:-moonshine}
+      ASR_MOONSHINE_MODEL: ${ASR_MOONSHINE_MODEL:-moonshine/tiny}
+      LOG_LEVEL: INFO
+    volumes:
+      # Read-only mounts, so editing a dictionary or the mapper takes effect on
+      # restart without a rebuild.
+      - ../backend/functions/asr:/app/asr:ro
+      - ../backend/functions/text-to-gloss:/app/text-to-gloss:ro
+      - ../dictionary:/app/dictionary:ro
+      # The gateway itself is COPYed into the image so it can run standalone,
+      # but mount it too: without this, editing server.py needs a full rebuild,
+      # which also means re-downloading the ML wheels.
+      - ./gateway/server.py:/app/server.py:ro
+    restart: unless-stopped
+
+  dictionary:
+    image: nginx:1.27-alpine
+    ports:
+      - "8081:80"
+    volumes:
+      - ./dictionary/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../dictionary:/clips:ro
+    healthcheck:
+      # 127.0.0.1, not localhost: nginx only has `listen 80` (IPv4), while
+      # localhost resolves to ::1 first in this image — the probe then fails
+      # with "connection refused" against a perfectly healthy server.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped

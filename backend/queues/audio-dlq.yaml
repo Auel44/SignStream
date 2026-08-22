@@ -1,0 +1,39 @@
+# SignStream audio dead-letter queue manifest.
+# Terraform: ../infrastructure/stacks/async/queues.tf
+
+name: signstream-{env}-audio-dlq
+purpose: >
+  Catches audio-frame messages that the asr Lambda failed to process
+  three times in a row. Prevents a single poison message from blocking
+  the live pipeline while preserving the payload for post-mortem.
+
+producers:
+  - queue: audio-queue
+    trigger: message exceeds max_receive_count on the source queue
+    action: automatic redrive by SQS
+
+consumers:
+  - operator: human — inspected via CloudWatch dashboard or the AWS
+    console. There is no consuming Lambda; messages are read manually.
+  - optional_redrive: back onto audio-queue once the underlying bug is
+    fixed, using StartMessageMoveTask.
+
+message_body_schema: ../events/audio-frame.json
+
+retention_seconds: 1209600            # 14 days — the SQS maximum
+visibility_timeout_seconds: 30        # irrelevant (no auto-consumer)
+max_receive_count: null               # DLQs don't redrive to themselves
+dead_letter_target: null
+
+alarms:
+  - name: signstream-<env>-audio-dlq-non-empty
+    definition: ../infrastructure/stacks/monitoring/dlq_alarm.tf
+    fires_when: ApproximateNumberOfMessagesVisible >= 1 for 1 minute
+    action: SNS -> alert email
+
+notes: |
+  * A message landing here is a signal that something upstream is
+    consistently failing — bad ASR model config, bad frame payload,
+    downstream service unreachable. Investigate before replaying.
+  * SQS retains DLQ messages for the full 14 days regardless of consumer
+    activity; free tier covers this.
