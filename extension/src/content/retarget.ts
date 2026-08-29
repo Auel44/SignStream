@@ -41,8 +41,16 @@ import * as THREE from "three";
 import { boneKey, restFrame, type BoneLink, type Rig } from "./rigs";
 import type { SignClipFrame } from "../shared/types";
 
-/** Every bone points along its own +Y — see the note above. */
-const BONE_AXIS = new THREE.Vector3(0, 1, 0);
+/**
+ * Fallback bone axis, used only when a rig states none and none can be measured.
+ *
+ * The note above holds for the MakeHuman rigs, and they say so explicitly via
+ * `Rig.boneAxis`. It is NOT a property of skeletons in general: a VRM's bind
+ * pose is a mandated T-pose whose normalized bones rest with identity
+ * rotations, so its arm and finger bones point along world ±X. Measured on the
+ * shipped VRM, only 1 of 7 sampled bones rested along +Y.
+ */
+const DEFAULT_BONE_AXIS = new THREE.Vector3(0, 1, 0);
 
 /**
  * Shortest keypoint separation, in clip metres, that yields a usable direction.
@@ -73,8 +81,23 @@ function tracked(p: [number, number, number] | undefined): boolean {
 }
 
 interface Solved {
-  bone: THREE.Bone;
+  /**
+   * Object3D rather than Bone: a VRM is driven through its *normalized* bones,
+   * which three-vrm builds as a parallel Object3D hierarchy and copies onto the
+   * real skeleton in `vrm.update()`. Only `.quaternion` and `.parent` are ever
+   * touched, so the narrower type bought nothing.
+   */
+  bone: THREE.Object3D;
   link: BoneLink;
+  /**
+   * The direction this bone points, in its own local space.
+   *
+   * `apply` rotates this onto the target direction. For MakeHuman rigs it is
+   * +Y for every bone; for a VRM it differs per bone and is measured from the
+   * bind pose. Getting it wrong does not fail loudly — it silently poses every
+   * affected bone at an angle, which reads as a broken avatar.
+   */
+  axis: THREE.Vector3;
   /** Index into `world` of the nearest DRIVEN ancestor, or -1 if there is none. */
   parent: number;
   /**
@@ -112,7 +135,7 @@ export class Retargeter {
   /** World rotation per solved bone, rebuilt each frame. */
   private world: THREE.Quaternion[] = [];
   /** Keyed by `boneKey`, not by literal name — see the note there. */
-  private readonly bones = new Map<string, THREE.Bone>();
+  private readonly bones = new Map<string, THREE.Object3D>();
   private readonly missing: string[] = [];
 
   /** Clip space -> rig space, measured from the bind pose. See `calibrate`. */
@@ -131,15 +154,33 @@ export class Retargeter {
    * @param mirrorX Flip left/right. A camera sees a signer mirrored, so whether
    *   the clip's "left wrist" is the rig's left depends on how the source was
    *   recorded. Exposed rather than assumed.
+   * @param resolve Optional bone lookup, used for VRM.
+   *
+   *   Scene traversal finds bones by the name the *model* happens to use, which
+   *   is the whole problem `boneKey` exists to paper over. A VRM answers the
+   *   question properly: `humanoid.getNormalizedBoneNode("leftIndexProximal")`
+   *   returns the right node whatever the file calls it. Passing that in means
+   *   `vrmLinks` needs no per-model naming knowledge at all.
    */
   constructor(
     root: THREE.Object3D,
     private readonly rig: Rig,
     private readonly mirrorX = false,
+    resolve?: (name: string) => THREE.Object3D | null,
   ) {
-    root.traverse((o) => {
-      if ((o as THREE.Bone).isBone) this.bones.set(boneKey(o.name), o as THREE.Bone);
-    });
+    if (resolve) {
+      // Every name the rig map mentions, plus the landmarks calibration needs.
+      const wanted = new Set<string>(this.rig.links.map((l) => l.bone));
+      for (const name of Object.values(this.rig.landmarks)) wanted.add(name);
+      for (const name of wanted) {
+        const node = resolve(name);
+        if (node) this.bones.set(boneKey(name), node);
+      }
+    } else {
+      root.traverse((o) => {
+        if ((o as THREE.Bone).isBone) this.bones.set(boneKey(o.name), o);
+      });
+    }
     this.calibrate();
     this.build();
   }
@@ -197,14 +238,17 @@ export class Retargeter {
       return v;
     };
 
-    // MakeHuman numbers the spine downwards: spine01 is the upper chest and
-    // spine05 the pelvis. Measuring "up" from spine01 spans only the chest, and
-    // on the shipped rigs that stub of spine leans forward — it put the up axis
-    // 17 degrees off vertical, which tilts both the solved pose and the camera.
-    const hips = posOf("spine05") ?? posOf("spine04") ?? posOf("spine01");
-    const neck = posOf("neck01") ?? posOf("head");
-    const left = posOf("upperarm01.L") ?? posOf("clavicle.L");
-    const right = posOf("upperarm01.R") ?? posOf("clavicle.R");
+    // Landmarks come from the rig, not from this file. MakeHuman numbers the
+    // spine downwards — spine01 is the upper chest and spine05 the pelvis — so
+    // measuring "up" from spine01 spanned only a forward-leaning stub of chest
+    // and put the up axis 17 degrees off vertical, tilting both the solved pose
+    // and the camera. Naming the landmark per rig is what stops that knowledge
+    // being wired into the solver, where a VRM could never satisfy it.
+    const lm = this.rig.landmarks;
+    const hips = posOf(lm.hips);
+    const neck = posOf(lm.neck) ?? posOf(lm.head);
+    const left = posOf(lm.leftArm);
+    const right = posOf(lm.rightArm);
     if (!hips || !neck || !left || !right) return; // leave as identity
 
     const up = neck.clone().sub(hips);
@@ -220,8 +264,49 @@ export class Retargeter {
     this.calibrated = true;
   }
 
+  /**
+   * The direction `bone` points, in its own local space.
+   *
+   * A rig that states `boneAxis` is taken at its word — the MakeHuman rigs do,
+   * and they were verified against that value. Otherwise it is measured, which
+   * is the only option for a VRM.
+   *
+   * The measurement: a bone's geometry runs from itself to its direct child, and
+   * a child's `position` is already expressed in this bone's own space. So the
+   * normalised child offset IS the axis. Which child matters where a bone has
+   * several — a hand has five — so the chain is followed: the link map already
+   * says which joint comes next (`l.from === link.to`), and the direct child on
+   * the path to that bone is the one carrying the bone's length.
+   */
+  private axisFor(bone: THREE.Object3D, link: BoneLink): THREE.Vector3 {
+    const stated = this.rig.boneAxis;
+    if (stated) return new THREE.Vector3(...stated);
+
+    const nextName = this.rig.links.find((l) => l.from === link.to)?.bone;
+    const next = nextName ? this.bones.get(boneKey(nextName)) : undefined;
+
+    let child: THREE.Object3D | null = null;
+    if (next) {
+      // Climb from the continuation bone until its parent is this bone.
+      for (let n: THREE.Object3D | null = next; n; n = n.parent) {
+        if (n.parent === bone) {
+          child = n;
+          break;
+        }
+      }
+    }
+    // A tip bone (a distal phalanx) continues nowhere, so fall back to whatever
+    // single child it has, and to +Y if it is a leaf.
+    child ??= bone.children.find((c) => c.position.lengthSq() > 1e-12) ?? null;
+    if (!child) return DEFAULT_BONE_AXIS.clone();
+
+    const axis = child.position.clone();
+    if (axis.lengthSq() < 1e-12) return DEFAULT_BONE_AXIS.clone();
+    return axis.normalize();
+  }
+
   private build(): void {
-    const found: { bone: THREE.Bone; link: BoneLink }[] = [];
+    const found: { bone: THREE.Object3D; link: BoneLink }[] = [];
     for (const link of this.rig.links) {
       const bone = this.bones.get(boneKey(link.bone));
       if (bone) found.push({ bone, link });
@@ -237,14 +322,14 @@ export class Retargeter {
     };
     found.sort((a, b) => depth(a.bone) - depth(b.bone));
 
-    const indexOf = new Map<THREE.Bone, number>();
+    const indexOf = new Map<THREE.Object3D, number>();
     found.forEach(({ bone }, i) => indexOf.set(bone, i));
 
     this.solved = found.map(({ bone, link }) => {
       // Nearest ancestor that we also drive.
       let parent = -1;
       for (let p = bone.parent; p; p = p.parent) {
-        const idx = indexOf.get(p as THREE.Bone);
+        const idx = indexOf.get(p);
         if (idx !== undefined) {
           parent = idx;
           break;
@@ -257,10 +342,19 @@ export class Retargeter {
       // which is the case this used to handle alone.
       const gap = new THREE.Quaternion();
       for (let p = bone.parent; p; p = p.parent) {
-        if (indexOf.get(p as THREE.Bone) !== undefined) break;
+        if (indexOf.get(p) !== undefined) break;
         gap.premultiply(p.quaternion);
       }
-      return { bone, link, parent, bind: bone.quaternion.clone(), gap };
+      return {
+        bone,
+        link,
+        parent,
+        bind: bone.quaternion.clone(),
+        gap,
+        // Measured before anything is posed — `apply` overwrites the very
+        // rotations this reads, so it can only be done now.
+        axis: this.axisFor(bone, link),
+      };
     });
 
     this.world = this.solved.map(() => new THREE.Quaternion());
@@ -271,8 +365,20 @@ export class Retargeter {
    *
    * `mix` blends towards the solved pose rather than snapping, which smooths
    * 25 fps clips up to display rate and softens the handover between signs.
+   *
+   * `fingerMix` is the same thing for the finger joints, which need a great
+   * deal more of it. Measured over 30 clips sampled at display rate, with no
+   * smoothing at all: an arm bone moves 1.45 degrees per frame and its speed
+   * changes by 0.96 between frames, while a finger joint moves 5.17 and its
+   * speed changes by 5.30 — as much as the motion itself. A signal whose
+   * frame-to-frame acceleration equals its velocity is not carrying motion, it
+   * is carrying noise, and 2D tracking of a foreshortened finger is exactly
+   * where that noise comes from. Filtering both at one rate would either leave
+   * the fingers buzzing or turn the arms to treacle.
+   *
+   * Defaults to `mix`, so `reset` and any caller wanting a hard snap gets one.
    */
-  apply(frame: SignClipFrame, mix = 1): void {
+  apply(frame: SignClipFrame, mix = 1, fingerMix = mix): void {
     const pos = frame.positions;
 
     for (let i = 0; i < this.solved.length; i++) {
@@ -312,11 +418,11 @@ export class Retargeter {
       this.inv.copy(parentWorld).invert();
       this.dir.applyQuaternion(this.inv);
 
-      // Shortest arc from the bone's axis to the target — a pure "swing".
-      // Deliberately no twist: a direction alone cannot say how a bone is
-      // rolled about its own axis, and 2D source data carries no twist at all.
-      // Inventing one makes forearms and fingers visibly wrong.
-      this.q.setFromUnitVectors(BONE_AXIS, this.dir);
+      // Shortest arc from the bone's own rest axis to the target — a pure
+      // "swing". Deliberately no twist: a direction alone cannot say how a bone
+      // is rolled about its own axis, and 2D source data carries no twist at
+      // all. Inventing one makes forearms and fingers visibly wrong.
+      this.q.setFromUnitVectors(s.axis, this.dir);
 
       // Anatomical clamp. The rest pose has each phalanx roughly in line with
       // its parent, so this rotation's magnitude is the joint's bend — and a
@@ -335,8 +441,11 @@ export class Retargeter {
         }
       }
 
-      if (mix >= 1) s.bone.quaternion.copy(this.q);
-      else s.bone.quaternion.slerp(this.q, mix);
+      // Finger joints are exactly the bones carrying an anatomical limit, so
+      // that flag already tells the two classes apart.
+      const m = s.link.limit !== undefined ? fingerMix : mix;
+      if (m >= 1) s.bone.quaternion.copy(this.q);
+      else s.bone.quaternion.slerp(this.q, m);
 
       this.world[i].copy(parentWorld).multiply(s.bone.quaternion);
     }

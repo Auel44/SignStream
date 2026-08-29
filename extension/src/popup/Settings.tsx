@@ -97,7 +97,7 @@ export function Settings({
       avatarCustomPosition: null, // also discard any dragged placement
       avatarContrast: "standard",
       avatarBackdrop: "studio",
-      signingSpeed: 1.2,
+      signingSpeed: 1,
       autoStart: true,
       audioPassthrough: true,
       dimBackground: false,
@@ -400,7 +400,7 @@ export function Settings({
               <input
                 className="slider"
                 type="range"
-                min={0.7}
+                min={0.5}
                 max={1.3}
                 step={0.1}
                 value={settings.signingSpeed}
@@ -580,24 +580,31 @@ function StatusPage({ connected }: { connected: boolean }) {
       value: data.signIds > 0 ? `${data.signIds} ids` : "no words matched",
     },
     {
-      label: "5 · Overlay",
+      // Between "signs were emitted" and "the overlay has them" sits the relay
+      // to the page — the one hop that can fail while every other row is green.
+      label: "5 · Page relay",
+      ok: data.contentReachable,
+      value: data.contentReachable ? "delivered" : "no content script — reload the page",
+    },
+    {
+      label: "6 · Overlay",
       ok: a !== null,
       value: a ? "mounted" : "not on this tab",
     },
     {
-      label: "6 · Model",
+      label: "7 · Model",
       ok: Boolean(a?.rigLoaded),
       value: a?.rigError ? "failed" : a?.rigLoaded ? a.rigId : "loading…",
     },
     {
-      label: "7 · Skeleton",
+      label: "8 · Skeleton",
       // A rig map that matches nothing is the failure that cost the most time:
       // it renders a motionless avatar and says nothing anywhere.
       ok: Boolean(a && a.bonesDriven > 0 && a.bonesMissing === 0),
       value: a ? `${a.bonesDriven} driven, ${a.bonesMissing} missing` : "—",
     },
     {
-      label: "8 · Clips",
+      label: "9 · Clips",
       ok: Boolean(a && a.clipsPlayed > 0),
       value: a ? `${a.clipsPlayed} played, ${a.clipsMissing} missing` : "—",
     },
@@ -616,12 +623,17 @@ function StatusPage({ connected }: { connected: boolean }) {
       </div>
 
       {data.captureError && <div className="error-note">{data.captureError}</div>}
+      {data.captureWarning && <div className="error-note">{data.captureWarning}</div>}
       {a?.rigError && <div className="error-note">Model: {a.rigError}</div>}
 
       <div className="status-meta">
         <div>
           <span className="status-meta-key">level</span> {data.lastRms.toFixed(3)}
-          {data.captureActive && data.lastRms < 0.001 && " — silence"}
+          {/* Name how long it has been flat: one silent frame is a pause
+              between words, thirty seconds of them is a broken capture. */}
+          {data.captureActive &&
+            data.audioSilentMs > 0 &&
+            ` — silence for ${Math.round(data.audioSilentMs / 1000)}s`}
         </div>
         <div>
           <span className="status-meta-key">last sign</span> {data.lastSignId || "—"}

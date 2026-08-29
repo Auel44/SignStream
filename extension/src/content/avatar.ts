@@ -8,9 +8,15 @@
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import {
+  VRMLoaderPlugin,
+  VRMUtils,
+  type VRM,
+  type VRMHumanBoneName,
+} from "@pixiv/three-vrm";
 import type { AvatarStatus, SignClip } from "../shared/types";
 import { Retargeter } from "./retarget";
-import { boneKey, rigById, type Rig } from "./rigs";
+import { addSigningDepth, boneKey, rigById, type Rig } from "./rigs";
 
 /**
  * How far behind the audio a sign may be and still be worth showing.
@@ -44,6 +50,36 @@ const MAX_QUEUE = 256;
  * synthesis between arbitrary handshapes.
  */
 const BLEND_MS = 140;
+
+/**
+ * Time constants for the pose low-pass, in milliseconds.
+ *
+ * The skeleton used to be snapped straight onto the solved pose every frame
+ * (`mix` was 1), which meant the avatar reproduced the tracker's noise as
+ * faithfully as it reproduced the sign. That is what "robotic" was: not too
+ * few frames, too many wrong ones.
+ *
+ * Measured over 30 clips sampled at 60 fps — `speed` is how far a bone turns
+ * per frame, `jerk` how much that speed changes between frames:
+ *
+ *                arms                  fingers
+ *   none      speed 1.45  jerk 0.96    speed 5.17  jerk 5.30   sat 12.8%
+ *   tau  70   speed 1.11  jerk 0.30    speed 2.33  jerk 0.99    sat 6.9%
+ *   tau 110   speed 1.01  jerk 0.20    speed 1.87  jerk 0.64    sat 5.9%
+ *   tau 160   speed 0.91  jerk 0.14    speed 1.56  jerk 0.45    sat 5.0%
+ *
+ * 70 ms is the knee for the arms: it removes 69% of the jerk while keeping 77%
+ * of the motion. Fingers get 110 ms because their noise floor is five times
+ * higher — that cuts their jerk by 88% and more than halves the joints pinned
+ * at the anatomical clamp, which is the fingers-folding-into-fists artefact.
+ *
+ * Both are small against a sign: a lexical clip runs about 1.5 s, so 110 ms of
+ * lag is under a tenth of one sign. Pushing further does keep helping the
+ * numbers, but a filter slow enough to erase the noise is also slow enough to
+ * erase the handshape — and handshape is the part that carries meaning.
+ */
+const SMOOTHING_MS = 70;
+const FINGER_SMOOTHING_MS = 110;
 
 // Both constants below are measured, not chosen. Posing the rig through 81,492
 // hand-joint samples — every wrist, middle fingertip and thumb tip across a
@@ -98,6 +134,8 @@ interface PendingSign {
   mediaTime: number;
   /** Wall-clock arrival, the fallback when no media clock is available. */
   queuedAt: number;
+  /** One letter of a fingerspelled word rather than a lexical sign. */
+  fingerspell: boolean;
 }
 
 interface QueuedSign {
@@ -111,7 +149,33 @@ interface QueuedSign {
    * whatever sign was mid-flight.
    */
   elapsedMs: number;
+  /** One letter of a spelled word — played faster, see FINGERSPELL_SPEED. */
+  fingerspell: boolean;
 }
+
+/**
+ * How much faster a fingerspelled letter runs than a lexical sign.
+ *
+ * Not a stylistic preference. A lexical sign is one unit of meaning and is read
+ * as one; a spelled word is a run of letters read as a single burst, and real
+ * signers spell far faster than they sign — the handshapes are small, static,
+ * and carry no path movement to follow.
+ *
+ * It also has to be fast for the feature to be usable at all: a five-letter
+ * word at lexical pace is five ~1.5 s clips, so "AIRPODS" would occupy about
+ * eleven seconds and expire against MAX_SIGN_AGE_MS before it finished. At 2.2x
+ * the same word fits inside the window with room for the signs around it.
+ */
+const FINGERSPELL_SPEED = 2.2;
+
+/**
+ * Cross-fade between consecutive letters of one word.
+ *
+ * Much shorter than BLEND_MS: the full 140 ms hand-over is what separates two
+ * distinct signs, and applying it between letters would visually punctuate a
+ * word into pieces, which is the opposite of how spelling reads.
+ */
+const FINGERSPELL_BLEND_MS = 45;
 
 export class Avatar {
   private renderer: THREE.WebGLRenderer;
@@ -119,6 +183,15 @@ export class Avatar {
   private camera: THREE.PerspectiveCamera;
   /** Loaded model. Null until the glTF resolves — the loop no-ops until then. */
   private figure: THREE.Object3D | null = null;
+  /**
+   * The VRM, when this rig is one. Null for the glTF rigs.
+   *
+   * Held because a VRM has to be ticked: posing writes to the *normalized*
+   * bones, and `vrm.update()` is what copies that onto the skeleton the mesh is
+   * actually skinned to. Skip it and every pose is computed and then discarded,
+   * which looks exactly like a rig whose bones never resolved.
+   */
+  private vrm: VRM | null = null;
   /** Solves bone rotations from clip keypoints. Null until the model loads. */
   private retargeter: Retargeter | null = null;
   /** Set when the model could not be loaded, so the UI can say so. */
@@ -222,12 +295,43 @@ export class Avatar {
       // workers. The model then fails to load and the overlay renders empty
       // with no obvious cause. A couple of MB is the better trade.
       const url = chrome.runtime.getURL(this.rig.file);
-      const gltf = await new GLTFLoader().loadAsync(url);
-      this.figure = gltf.scene;
-      this.scene.add(this.figure);
+      const loader = new GLTFLoader();
+      if (this.rig.format === "vrm") {
+        loader.register((parser) => new VRMLoaderPlugin(parser));
+      }
+      const gltf = await loader.loadAsync(url);
 
-      this.orientUpright(gltf.scene);
-      this.retargeter = new Retargeter(this.figure, this.rig);
+      if (this.rig.format === "vrm") {
+        const vrm = gltf.userData.vrm as VRM | undefined;
+        if (!vrm) throw new Error("file has no VRM extension");
+        this.vrm = vrm;
+
+        // Both are pure optimisations and both are safe on a model we only
+        // pose. `combineSkeletons` matters most: it collapses the many small
+        // skeletons a VRM export leaves behind into one, which is what keeps
+        // per-frame skinning cheap on the low-spec machines this targets.
+        VRMUtils.removeUnnecessaryVertices(gltf.scene);
+        VRMUtils.combineSkeletons(gltf.scene);
+
+        this.figure = vrm.scene;
+        this.scene.add(this.figure);
+
+        // No orientUpright: VRM mandates Y-up, so there is no axis conversion
+        // to undo, and nothing to measure it from — the check looks for
+        // MakeHuman spine names that a VRM does not have.
+        //
+        // Bones come from the humanoid rather than from traversing the scene.
+        // This is the point of the format: `leftIndexProximal` resolves on any
+        // VRM, whatever the file's own bone names happen to be.
+        this.retargeter = new Retargeter(this.figure, this.rig, false, (name) =>
+          vrm.humanoid.getNormalizedBoneNode(name as VRMHumanBoneName),
+        );
+      } else {
+        this.figure = gltf.scene;
+        this.scene.add(this.figure);
+        this.orientUpright(gltf.scene);
+        this.retargeter = new Retargeter(this.figure, this.rig);
+      }
       const missing = this.retargeter.missingBones;
       if (missing.length) {
         // A silent mismatch here looks like "the avatar ignores my data", so
@@ -277,11 +381,12 @@ export class Avatar {
       });
       return matches[0];
     };
-    // spine05 is the base of the spine, spine01 the upper chest — see the note
-    // in `Retargeter.calibrate`. Measuring the whole spine rather than its top
-    // few centimetres is what makes this vector a reliable "up".
-    const hips = bone("spine05") ?? bone("spine01") ?? bone("root");
-    const neck = bone("neck01") ?? bone("head");
+    // The hips landmark is the base of the spine — see the note in
+    // `Retargeter.calibrate`. Measuring the whole spine rather than its top few
+    // centimetres is what makes this vector a reliable "up".
+    const lm = this.rig.landmarks;
+    const hips = bone(lm.hips) ?? bone("root");
+    const neck = bone(lm.neck) ?? bone(lm.head);
     if (!hips || !neck) return;
 
     scene.updateMatrixWorld(true);
@@ -324,7 +429,14 @@ export class Avatar {
     const axes = this.retargeter.getAxes();
     if (!axes) return;
 
+    // A VRM's humanoid answers by role; a glTF rig has to be searched by name.
     const bone = (name: string): THREE.Object3D | undefined => {
+      if (this.vrm) {
+        return (
+          this.vrm.humanoid.getNormalizedBoneNode(name as VRMHumanBoneName) ??
+          undefined
+        );
+      }
       const hits: THREE.Object3D[] = [];
       const want = boneKey(name);
       this.figure!.traverse((o) => {
@@ -336,12 +448,13 @@ export class Avatar {
       o.getWorldPosition(new THREE.Vector3());
 
     this.figure.updateMatrixWorld(true);
-    const head = bone("head");
-    // MakeHuman's spine is numbered from the top down: spine01 sits at the
-    // shoulders, spine05 at the pelvis. The waist is spine05 — measured, not
-    // assumed. Cropping at spine03 would cut the hands off, since signing
-    // space reaches down to about the navel.
-    const waistBone = bone("spine05") ?? bone("spine04") ?? bone("spine01");
+    const lm = this.rig.landmarks;
+    const head = bone(lm.head);
+    // The waist is the hips landmark — measured, not assumed. On MakeHuman the
+    // spine is numbered from the top down, so this is spine05 at the pelvis and
+    // NOT spine03, which would crop through the hands: signing space reaches
+    // down to about the navel.
+    const waistBone = bone(lm.hips);
     if (!head || !waistBone) return;
 
     const top = at(head);
@@ -354,8 +467,8 @@ export class Avatar {
     const spineLen = top.distanceTo(waist);
     top.addScaledVector(axes.up, spineLen * 0.3);
 
-    const armL = bone("upperarm01.L") ?? bone("clavicle.L");
-    const armR = bone("upperarm01.R") ?? bone("clavicle.R");
+    const armL = bone(lm.leftArm);
+    const armR = bone(lm.rightArm);
     const shoulders = armL && armR ? at(armL).distanceTo(at(armR)) : spineLen * 0.5;
 
     this.framing = {
@@ -467,11 +580,12 @@ export class Avatar {
    *   * Captions — the cue's own start time, which may be well ahead of
    *     playback, so the sign waits until the video reaches it.
    */
-  enqueueClip(clip: SignClip, mediaTime?: number): void {
+  enqueueClip(clip: SignClip, mediaTime?: number, fingerspell?: boolean): void {
     this.queue.push({
       clip,
       mediaTime: mediaTime ?? this.mediaClock?.() ?? 0,
       queuedAt: performance.now(),
+      fingerspell: fingerspell === true,
     });
     // Keep in media order — captions can arrive out of order, and a scheduled
     // queue only makes sense sorted by when each sign is due.
@@ -556,15 +670,21 @@ export class Avatar {
 
     // Clip time only advances while the media is actually producing audio, so
     // a pause, a seek or a buffer stall holds the pose instead of running on.
-    const step = this.playing ? dt * this.effectiveSpeed : 0;
+    // Spelled letters advance faster than lexical signs. Multiplied into the
+    // existing rate rather than replacing it, so the user's pace slider and the
+    // video's playbackRate still apply — spelling is relatively faster at any
+    // setting, not pinned to one absolute speed.
+    const step = this.playing
+      ? dt * this.effectiveSpeed * (this.current?.fingerspell ? FINGERSPELL_SPEED : 1)
+      : 0;
 
     if (this.blendMsLeft > 0) this.blendMsLeft = Math.max(0, this.blendMsLeft - dt);
 
     if (this.playing && !this.current) {
       const next = this.takeFreshest();
       if (next) {
-        this.blendMsLeft = BLEND_MS;
-        this.current = { clip: next, elapsedMs: 0 };
+        this.blendMsLeft = next.fingerspell ? FINGERSPELL_BLEND_MS : BLEND_MS;
+        this.current = { clip: next.clip, elapsedMs: 0, fingerspell: next.fingerspell };
       }
     }
 
@@ -577,15 +697,15 @@ export class Avatar {
         // sequence read as one utterance rather than a list of words.
         const next = this.playing ? this.takeFreshest() : null;
         if (next) {
-          this.blendMsLeft = BLEND_MS;
-          this.current = { clip: next, elapsedMs: 0 };
-          this.applyFrame(next, 0);
+          this.blendMsLeft = next.fingerspell ? FINGERSPELL_BLEND_MS : BLEND_MS;
+          this.current = { clip: next.clip, elapsedMs: 0, fingerspell: next.fingerspell };
+          this.applyFrame(next.clip, 0, dt);
         } else {
           this.current = null;
           this.restPose();
         }
       } else {
-        this.applyFrame(this.current.clip, this.current.elapsedMs);
+        this.applyFrame(this.current.clip, this.current.elapsedMs, dt);
       }
     } else if (this.placeholderMsLeft > 0) {
       this.placeholderMsLeft -= step;
@@ -593,6 +713,12 @@ export class Avatar {
     } else {
       this.restPose();
     }
+
+    // After posing, before rendering: this is what carries the normalized bones
+    // we just wrote onto the skeleton the mesh is skinned to, and it also runs
+    // expressions and spring bones. Seconds, not milliseconds — three-vrm's
+    // clock is in seconds while everything above is in milliseconds.
+    this.vrm?.update(dt / 1000);
 
     this.renderer.render(this.scene, this.camera);
   };
@@ -605,7 +731,7 @@ export class Avatar {
    * video reaches 01:16, however long the user spent paused in between. Wall
    * clock is the fallback for pages with no readable media element.
    */
-  private takeFreshest(): SignClip | null {
+  private takeFreshest(): PendingSign | null {
     const nowMedia = this.mediaClock?.();
     const nowWall = performance.now();
 
@@ -632,7 +758,7 @@ export class Avatar {
       }
 
       this.stats.shown += 1;
-      return candidate.clip;
+      return candidate;
     }
     return null;
   }
@@ -644,7 +770,7 @@ export class Avatar {
    * data plays smoothly at display rate, then hands the blended keypoints to
    * the retargeter, which converts positions into bone rotations.
    */
-  private applyFrame(clip: SignClip, elapsed: number): void {
+  private applyFrame(clip: SignClip, elapsed: number, dt: number): void {
     if (!this.retargeter) return;
     const frames = clip.frames;
     if (frames.length === 0) return;
@@ -680,14 +806,33 @@ export class Avatar {
       }),
     };
 
+    // Move a fraction of the way towards the solved pose rather than snapping
+    // onto it. Framed as a time constant rather than a per-frame fraction so
+    // the result does not change with the display's refresh rate — a 144 Hz
+    // monitor would otherwise smooth two and a half times harder than a 60 Hz
+    // one, for no reason a viewer could name.
+    const ease = (tau: number): number => (dt > 0 ? 1 - Math.exp(-dt / tau) : 1);
+    let mix = ease(SMOOTHING_MS);
+    let fingerMix = ease(FINGER_SMOOTHING_MS);
+
     // During a handover, ease into the new sign's pose rather than snapping.
     // Smoothstep, because a linear blend reads as a twitch over 140 ms.
-    let mix = 1;
     if (this.blendMsLeft > 0) {
       const u = 1 - this.blendMsLeft / BLEND_MS;
-      mix = u * u * (3 - 2 * u);
+      const blend = u * u * (3 - 2 * u);
+      mix *= blend;
+      fingerMix *= blend;
     }
-    this.retargeter.apply(blended, mix);
+
+    // A clip recorded from a frontal video has z = 0 everywhere, which is not
+    // "at the body plane" but "unknown" — solved literally it swings the arms
+    // inside the torso, and the hands then render behind the chest. Give the
+    // arm the front-to-back profile the source could not record. Only for 2D
+    // sources: a clip that carries real depth must keep it.
+    const posed =
+      clip.source === "openpose-2d" ? addSigningDepth(blended) : blended;
+
+    this.retargeter.apply(posed, mix, fingerMix);
   }
 
   /** The pose the model was authored in — used between signs and when idle. */

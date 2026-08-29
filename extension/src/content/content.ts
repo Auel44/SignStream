@@ -30,6 +30,104 @@ let detector: VideoSync | null = null;
 let captions: CaptionFeed | null = null;
 /** Which strategy is supplying words. Surfaced for diagnosis. */
 let mode: "captions" | "captions-live" | "recorded-asr" | "live-asr" = "recorded-asr";
+/** Signs that arrived before any avatar existed. Non-zero is always a fault. */
+let signsDroppedNoAvatar = 0;
+
+// ── Orphaned content scripts ────────────────────────────────────────────────
+//
+// Reloading, updating or disabling the extension destroys the context this
+// script belongs to, but NOT the script: Chrome leaves it running in every
+// page that was already open. It keeps its timers, its observers and the
+// avatar's requestAnimationFrame loop, but every `chrome.*` call it makes now
+// throws "Extension context invalidated".
+//
+// Left alone that is not a cosmetic problem. The render loop carries on
+// driving WebGL on a page whose overlay can never receive another sign, and
+// each media event throws again, so the page's console fills with an error
+// naming a line inside bundled three.js — which reads like a rendering bug and
+// is nothing of the kind.
+//
+// So it is detected and shut down once, quietly. Reloading the page is what
+// brings the overlay back, and the message says so.
+
+/** True while this script still belongs to a live extension. */
+function extensionAlive(): boolean {
+  try {
+    // Reading `id` off an invalidated runtime yields undefined rather than
+    // throwing, but the whole object can be gone, so it is still guarded.
+    return chrome.runtime?.id !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+let orphaned = false;
+
+/** Tear everything down for good. Idempotent — several paths can notice. */
+function shutdownOrphan(): void {
+  if (orphaned) return;
+  orphaned = true;
+  try {
+    captions?.stop();
+    captions = null;
+    videoSync?.detach();
+    videoSync = null;
+    avatar?.clearQueue();
+    avatar?.stop();
+    overlay?.unmount();
+    // Deliberately NOT via hide(): that ends by restarting the detector, which
+    // is exactly the loop an orphan must not keep running.
+    detector?.detach();
+    detector = null;
+    clearInterval(orphanWatch);
+  } catch {
+    // Teardown is best-effort. Nothing here can be retried, and throwing would
+    // only add another uncatchable error to the page.
+  }
+  console.info(
+    "[SignStream] The extension was reloaded, so this page's interpreter has " +
+      "been disconnected. Reload the page to bring it back.",
+  );
+}
+
+/**
+ * Fire-and-forget message to the service worker.
+ *
+ * Every send site went through `void chrome.runtime.sendMessage(...)`, which
+ * throws synchronously on an invalidated context and rejects when the service
+ * worker is merely asleep. Both are handled here so no caller has to.
+ */
+function notify(message: ExtensionMessage): void {
+  if (orphaned) return;
+  if (!extensionAlive()) {
+    shutdownOrphan();
+    return;
+  }
+  try {
+    void chrome.runtime.sendMessage(message).catch(() => {
+      // A dropped message to a sleeping worker is normal and not worth a log.
+      if (!extensionAlive()) shutdownOrphan();
+    });
+  } catch {
+    shutdownOrphan();
+  }
+}
+
+/**
+ * Notice orphaning even when nothing is being sent.
+ *
+ * `notify` only detects it when the page happens to emit a media event. A
+ * video that is simply playing emits none, so without this the render loop
+ * would carry on driving WebGL on a dead overlay for as long as the tab stayed
+ * open. Five seconds is far below what a person would notice and costs a
+ * property read; the interval clears itself the moment it fires.
+ */
+const orphanWatch = setInterval(() => {
+  if (!extensionAlive()) {
+    clearInterval(orphanWatch);
+    shutdownOrphan();
+  }
+}, 5000);
 
 chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
   switch (message.type) {
@@ -70,7 +168,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
       if (settings.showTranscript) overlay?.setCaption(message.text);
       break;
     case "SIGN_ID":
-      void playSign(message.id, message.at);
+      void playSign(message.id, message.at, message.fingerspell);
       break;
   }
 });
@@ -89,14 +187,30 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, respon
  * but clips queue in arrival order inside the avatar, so a slow first fetch
  * can't reorder a sentence.
  */
-async function playSign(signId: string, at?: number): Promise<void> {
-  if (!avatar) return;
+async function playSign(
+  signId: string,
+  at?: number,
+  fingerspell?: boolean,
+): Promise<void> {
+  if (!avatar) {
+    // Reaching here means signs are arriving for a page with no mounted
+    // interpreter. Recoverable — ask for the capture state that built no
+    // avatar and mount now — but say so either way: this used to be a bare
+    // `return`, which discarded every sign of the session without a trace.
+    signsDroppedNoAvatar += 1;
+    console.warn(
+      `[SignStream] sign ${signId} arrived with no avatar mounted ` +
+        `(${signsDroppedNoAvatar} dropped) — mounting now`,
+    );
+    void show();
+    return;
+  }
   const clip = await loadSignClip(signId, settings);
   if (!avatar) return; // capture may have stopped while we were fetching
   // `at` is present only on the caption path: the media time these words are
   // spoken. Passing it through lets the avatar hold the sign until the video
   // reaches that moment instead of playing it the instant it arrives.
-  if (clip) avatar.enqueueClip(clip, at);
+  if (clip) avatar.enqueueClip(clip, at, fingerspell);
   else avatar.playPlaceholder();
 }
 
@@ -129,7 +243,7 @@ async function show(): Promise<void> {
     // write quota in a second.
     (avatarCustomPosition) => {
       settings = { ...settings, avatarCustomPosition };
-      void chrome.runtime.sendMessage({
+      notify({
         type: "SAVE_SETTINGS",
         patch: { avatarCustomPosition },
       } satisfies ExtensionMessage);
@@ -185,7 +299,7 @@ async function show(): Promise<void> {
 function startCaptionFeed(): void {
   captions?.stop();
   captions = startCaptions(videoSync?.mediaElement ?? null, (cue) => {
-    void chrome.runtime.sendMessage({
+    notify({
       type: "MAP_TEXT",
       text: cue.text,
       at: cue.startTime,
@@ -235,7 +349,7 @@ function reconsiderSource(): void {
 }
 
 function setAudioStreaming(on: boolean): void {
-  void chrome.runtime.sendMessage({
+  notify({
     type: "SET_AUDIO_STREAMING",
     enabled: on,
   } satisfies ExtensionMessage);
@@ -277,10 +391,10 @@ function startDetector(): void {
     onState: () => {},
     onFlush: () => {},
     onMediaStarted: () => {
-      void chrome.runtime.sendMessage({ type: "MEDIA_STARTED" } satisfies ExtensionMessage);
+      notify({ type: "MEDIA_STARTED" } satisfies ExtensionMessage);
     },
     onMediaIdle: () => {
-      void chrome.runtime.sendMessage({ type: "MEDIA_IDLE" } satisfies ExtensionMessage);
+      notify({ type: "MEDIA_IDLE" } satisfies ExtensionMessage);
     },
   });
 }
@@ -290,8 +404,26 @@ function stopDetector(): void {
   detector = null;
 }
 
-// Pull settings once at injection so the detector can arm itself on a page the
-// user opens long after installing.
+/**
+ * Adopt whatever state the extension is already in, at injection time.
+ *
+ * Settings arm the dormant detector on a page opened long after installing.
+ * Capture state matters for a subtler reason: `show()` — the only thing that
+ * ever constructs the avatar — runs exclusively in response to a CAPTURE_STATE
+ * broadcast. A content script that loads while capture is ALREADY running
+ * never sees that broadcast, so `avatar` stays null, and every sign id relayed
+ * to it is dropped by `playSign`'s `if (!avatar) return`. No fetch, no error,
+ * nothing in any log: the backend transcribes and emits signs perfectly while
+ * the page shows no interpreter at all.
+ *
+ * That is not a rare corner. It is what happens every time the page is
+ * reloaded mid-capture, and every time the extension is reloaded during
+ * development (which orphans the old content script and leaves the new one
+ * loading into a session that is already live).
+ *
+ * Asking on load makes the overlay self-healing: reload the page and the
+ * avatar comes back on its own.
+ */
 void chrome.runtime
   .sendMessage({ type: "GET_SETTINGS" })
   .then((res: ExtensionMessage | undefined) => {
@@ -299,6 +431,12 @@ void chrome.runtime
       settings = res.settings;
       updateDetector();
     }
+    // Safe to ask: the service worker only acts on a queued auto-start when
+    // the sender is the popup, so this query has no side effect from here.
+    return chrome.runtime.sendMessage({ type: "GET_CAPTURE_STATE" });
+  })
+  .then((res: ExtensionMessage | undefined) => {
+    if (res?.type === "CAPTURE_STATE" && res.active && settings.enabled) void show();
   })
   .catch(() => {
     // Service worker asleep or extension reloading — the next SETTINGS

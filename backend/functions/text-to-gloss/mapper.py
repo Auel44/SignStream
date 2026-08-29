@@ -177,8 +177,17 @@ def map_tokens(
             word = tokens[i]
             # No sign for this word — spell it, if we can do so completely and
             # have not already spent this utterance's spelling budget.
+            #
+            # Function words are never spelled, even though they reach here
+            # unmatched. Signed languages do not have articles or copulas at
+            # all, so spelling "THE" letter by letter does not translate the
+            # sentence — it inserts something no signer would produce, and
+            # spends three letter-clips doing it. The skip below only fires for
+            # words that DID match a gloss, so this is the only place an
+            # unmatched function word can be caught.
             if (
                 alphabet
+                and word not in _SKIPPED_TOKENS
                 and spelled < MAX_SPELLED_PER_UTTERANCE
                 and (spellable is None or word in spellable)
             ):

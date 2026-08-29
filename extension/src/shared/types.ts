@@ -146,7 +146,12 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   // video for anyone else in the room.
   audioPassthrough: true,
   dimBackground: false,
-  signingSpeed: 1.2,
+  // 1.0 = the pace the clip was recorded at. It defaulted to 1.2 — a fifth
+  // faster than a citation form is already signed — which read as rushed and
+  // gave a viewer no room to read a handshape before the next sign arrived.
+  // Faster is available on the slider for anyone who wants it; it is not a
+  // sensible thing to impose on a first-time viewer.
+  signingSpeed: 1,
   onboarded: false,
   languageChosen: false,
   wsEndpoint: "",
@@ -194,7 +199,7 @@ export type ClientControlMessage =
 export type CloudResponse =
   | { type: "ready" }
   | { type: "transcript"; text: string; isFinal: boolean }
-  | { type: "signId"; id: string; at?: number }
+  | { type: "signId"; id: string; at?: number; fingerspell?: boolean }
   | { type: "error"; message: string };
 
 // ── Diagnostics ─────────────────────────────────────────────────────────────
@@ -230,16 +235,38 @@ export interface AvatarStatus {
 export interface Diagnostics {
   captureActive: boolean;
   captureError?: string;
+  /**
+   * A capture that is running but producing nothing usable — the tab is muted,
+   * or the stream carries no audio. Distinct from `captureError`, which means
+   * capture is dead: this one stays live and may recover on its own.
+   */
+  captureWarning?: string;
   cloudConnected: boolean;
   /** Audio frames captured, and how many actually reached the cloud. */
   audioFrames: number;
   audioSent: number;
   /** Level of the most recent frame — near zero means silence is being captured. */
   lastRms: number;
+  /**
+   * How long the capture has been returning pure digital silence.
+   *
+   * Not the same as a quiet passage: this counts frames whose every sample is
+   * exactly zero, which real audio essentially never is. Sustained non-zero
+   * here is the signature of a stream that is connected but carries nothing.
+   */
+  audioSilentMs: number;
   transcripts: number;
   lastTranscript: string;
   signIds: number;
   lastSignId: string;
+  /**
+   * Whether the last relay to the captured tab was delivered.
+   *
+   * False means no content script is listening there, so sign ids are being
+   * emitted into nothing. Every other stage still reports healthy in that
+   * state, which is exactly why it needs its own line.
+   */
+  contentReachable: boolean;
   avatar: AvatarStatus | null;
 }
 
@@ -270,6 +297,19 @@ export type ExtensionMessage =
       audioPassthrough: boolean;
     }
   | { type: "OFFSCREEN_STOP" }
+  /**
+   * Readiness probe for a freshly created offscreen document.
+   *
+   * `chrome.offscreen.createDocument()` resolves when the document exists, not
+   * when its script has run — so an OFFSCREEN_START sent immediately after can
+   * land before the listener is registered and be dropped silently, leaving
+   * capture "active" with no audio ever captured. The service worker pings
+   * until this is answered before sending anything that matters.
+   */
+  | { type: "OFFSCREEN_PING" }
+  | { type: "OFFSCREEN_READY" }
+  /** Capture is live but producing nothing usable (offscreen → service worker). */
+  | { type: "CAPTURE_WARNING"; message: string | null }
   | { type: "OFFSCREEN_SET_LANGUAGE"; language: SignLanguage }
   | { type: "OFFSCREEN_SET_PASSTHROUGH"; audioPassthrough: boolean }
   // audio frame report (offscreen → service worker)
@@ -278,7 +318,11 @@ export type ExtensionMessage =
   | { type: "CLOUD_STATUS"; connected: boolean }
   // results coming back from the cloud (offscreen → service worker → popup/content)
   | { type: "TRANSCRIPT"; text: string; isFinal: boolean }
-  | { type: "SIGN_ID"; id: string; at?: number }
+  /**
+   * `fingerspell` marks one letter of a spelled word. Letters are read as a
+   * continuous run, not as separate signs, so the avatar plays them faster.
+   */
+  | { type: "SIGN_ID"; id: string; at?: number; fingerspell?: boolean }
   // caption cue text to be mapped to signs (content → service worker → offscreen)
   | { type: "MAP_TEXT"; text: string; at: number }
   | { type: "OFFSCREEN_MAP_TEXT"; text: string; at: number }
@@ -319,6 +363,20 @@ export interface SignClip {
   language: string;
   durationMs: number;
   fps: number;
+  /**
+   * How the keypoints were obtained.
+   *
+   * Every clip in the dictionary is currently `openpose-2d`, which matters at
+   * playback: a 2D source records no depth, so `z` is 0 on every keypoint and
+   * the avatar has to be given a front-to-back profile or it signs inside its
+   * own chest. See `addSigningDepth`. A clip from a 3D source carries real
+   * depth and must be left alone, so the distinction is recorded rather than
+   * assumed.
+   *
+   * Optional because older clips may predate the field; absent is treated as
+   * "not flat", so nothing is silently altered.
+   */
+  source?: "openpose-2d" | string;
   /** Ordered joint names; indexes line up with each frame's `positions`. */
   joints: string[];
   frames: SignClipFrame[];

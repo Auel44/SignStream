@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SignStream — VRM check</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0d1315;
+        --panel: #151d20;
+        --line: #253034;
+        --ink: #e4eced;
+        --muted: #91a2a6;
+        --ok: #46bdb2;
+        --bad: #e08a4b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.5 ui-monospace, "SF Mono", Consolas, monospace;
+        display: grid;
+        grid-template-columns: 1fr 24rem;
+        height: 100vh;
+      }
+      @media (max-width: 60rem) { body { grid-template-columns: 1fr; grid-template-rows: 1fr auto; } }
+
+      #stage { position: relative; display: grid; place-items: center; min-height: 0; }
+      /* 220x280 is the real overlay size in the extension — the point is to see
+         handshape legibility at the size users actually get, not at full screen. */
+      canvas { background: #0a0f11; border: 1px solid var(--line); }
+
+      #panel { border-left: 1px solid var(--line); padding: 1rem; overflow-y: auto; background: var(--panel); }
+      @media (max-width: 60rem) { #panel { border-left: 0; border-top: 1px solid var(--line); max-height: 45vh; } }
+
+      h1 { font-size: 0.75rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0 0 1rem; font-weight: 600; }
+      h2 { font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 1.5rem 0 0.5rem; font-weight: 600; }
+
+      dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.75rem; margin: 0; font-size: 0.82rem; }
+      dt { color: var(--muted); white-space: nowrap; }
+      dd { margin: 0; word-break: break-word; }
+      .ok { color: var(--ok); }
+      .bad { color: var(--bad); }
+
+      .controls { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
+      button {
+        font: inherit; font-size: 0.78rem;
+        background: transparent; color: var(--ink);
+        border: 1px solid var(--line); border-radius: 3px;
+        padding: 0.4rem 0.7rem; cursor: pointer;
+      }
+      button:hover { border-color: var(--ok); color: var(--ok); }
+      button[aria-pressed="true"] { border-color: var(--ok); color: var(--ok); background: #16302f; }
+      button:focus-visible { outline: 2px solid var(--ok); outline-offset: 2px; }
+
+      #log { font-size: 0.76rem; color: var(--muted); white-space: pre-wrap; margin-top: 0.5rem; }
+      .size { font-size: 0.72rem; color: var(--muted); margin-top: 0.5rem; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <div>
+        <canvas id="view" width="220" height="280"></canvas>
+        <p class="size">220 &times; 280 — the real overlay size</p>
+      </div>
+    </div>
+
+    <div id="panel">
+      <h1>VRM check</h1>
+      <dl id="facts"></dl>
+
+      <h2>Drive the skeleton</h2>
+      <div class="controls">
+        <button id="btn-rest" aria-pressed="false">Rest</button>
+        <button id="btn-wave" aria-pressed="false">Move arm</button>
+        <button id="btn-fingers" aria-pressed="false">Curl fingers</button>
+        <button id="btn-blink" aria-pressed="false">Expression</button>
+      </div>
+
+      <h2>Bone rest axes</h2>
+      <dl id="axes"></dl>
+      <p id="log"></p>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

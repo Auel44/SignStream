@@ -47,7 +47,7 @@ sys.path.insert(0, "/app/text-to-gloss")
 from asr_engine import select_engine  # noqa: E402
 from fingerspell import load_alphabet  # noqa: E402
 from mapper import VALID_LANGUAGES, Dictionary, map_tokens  # noqa: E402
-from normaliser import proper_noun_tokens, tokenise  # noqa: E402
+from normaliser import tokenise  # noqa: E402
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -143,11 +143,17 @@ async def send_signs(
     tokens = tokenise(text)
     # Proper nouns come from the raw text: capitalisation is the signal, and
     # normalisation destroys it.
+    # `spellable=None` means "spell ANY word with no sign", not only the ones
+    # that look like proper nouns. The narrower rule modelled a human
+    # interpreter, who paraphrases an unfamiliar ordinary word rather than
+    # spelling it — but paraphrasing needs a lexicon this system does not have,
+    # so in practice the word was simply dropped and the sentence lost it.
+    # Spelling it is the honest rendering of what was said.
     signs = map_tokens(
         tokens,
         dictionary_for(language),
         alphabet_for(language),
-        spellable=proper_noun_tokens(text),
+        spellable=None,
     )
 
     log.info("3 GLOSS  tokens %s%s", tokens, f"  @{at:.1f}s" if at is not None else "")
@@ -155,6 +161,12 @@ async def send_signs(
         payload: dict = {"type": "signId", "id": sign.sign_id}
         if at is not None:
             payload["at"] = at
+        # Tell the client this is one letter of a spelled word, not a lexical
+        # sign. Letters are short and are read as a run rather than
+        # individually, so the avatar plays them faster and without the pause
+        # it puts between signs — which is how fingerspelling actually looks.
+        if sign.is_fingerspell:
+            payload["fingerspell"] = True
         await ws.send(json.dumps(payload))
         log.info(
             "3 GLOSS  %-24s → %-18s → %s%s",

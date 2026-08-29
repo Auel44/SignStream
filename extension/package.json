@@ -7,19 +7,22 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "vrm-check": "vite --config vite.harness.config.ts",
+    "vrm-check:types": "tsc --noEmit -p tsconfig.harness.json"
   },
   "dependencies": {
+    "@pixiv/three-vrm": "^3.5.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.169.0"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",
-    "@types/three": "^0.169.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
+    "@types/three": "^0.169.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",

@@ -48,9 +48,20 @@ MAX_SPELL_LENGTH = 8
 #: recogniser rather than real words.
 MIN_SPELL_LENGTH = 3
 
-#: Cap per utterance. Spelling several words in a row starves every lexical
-#: sign behind them, which costs more meaning than the spelled words add.
-MAX_SPELLED_PER_UTTERANCE = 1
+#: Cap per utterance.
+#:
+#: Was 1, on the reasoning that spelling several words in a row starves the
+#: lexical signs behind them. That is a real cost, but it was being paid to
+#: avoid a problem the avatar already solves: signs carry the media time they
+#: belong to and are dropped once stale, so an over-long spelled run is trimmed
+#: by the queue rather than played late.
+#:
+#: Raised so an utterance is rendered in full — every word either signed or
+#: spelled — which is the behaviour asked for. Still bounded: an unbounded run
+#: on a sentence of entirely unknown words would queue minutes of letters for
+#: one sentence, and MAX_QUEUE would then discard the sentence after it rather
+#: than before, which is worse.
+MAX_SPELLED_PER_UTTERANCE = 6
 
 _ALPHABETIC = re.compile(r"^[a-z]+$")
 

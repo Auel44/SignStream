@@ -33,14 +33,19 @@ const pipeline: Omit<Diagnostics, "captureActive" | "avatar"> = {
   audioFrames: 0,
   audioSent: 0,
   lastRms: 0,
+  audioSilentMs: 0,
   transcripts: 0,
   lastTranscript: "",
   signIds: 0,
   lastSignId: "",
+  contentReachable: true,
 };
 
 const STORAGE_KEY = "settings";
 const OFFSCREEN_PATH = "src/offscreen/offscreen.html";
+/** ~1s total. Document creation is fast; this only covers script startup. */
+const OFFSCREEN_READY_ATTEMPTS = 20;
+const OFFSCREEN_READY_POLL_MS = 50;
 /** The popup markup, opened as a full tab for first-run onboarding. */
 const ONBOARDING_PATH = "src/popup/index.html";
 
@@ -102,9 +107,23 @@ const ready = loadCaptureState();
 function relayToContent(message: ExtensionMessage): void {
   void ready.then(() => {
     if (cached.tabId === null) return;
-    chrome.tabs.sendMessage(cached.tabId, message).catch(() => {
-      // No content script on this tab (e.g. chrome:// page) — ignore.
-    });
+    chrome.tabs
+      .sendMessage(cached.tabId, message)
+      .then(() => {
+        pipeline.contentReachable = true;
+      })
+      .catch(() => {
+        // No content script listening on the captured tab. Recording it rather
+        // than ignoring it, because this is the state in which the pipeline
+        // looks perfect end to end — audio captured, words transcribed, sign
+        // ids emitted — while nothing reaches the page and the avatar never
+        // appears. Silently swallowing it is what made that indistinguishable
+        // from a broken rig or a missing clip.
+        //
+        // Usually means the page was loaded before the extension (or before it
+        // was reloaded), so no content script was ever injected into it.
+        pipeline.contentReachable = false;
+      });
   });
 }
 
@@ -186,6 +205,35 @@ async function ensureOffscreenDocument(): Promise<void> {
     reasons: [chrome.offscreen.Reason.USER_MEDIA],
     justification: "Capture tab audio for real-time speech-to-sign interpretation.",
   });
+  await waitForOffscreen();
+}
+
+/**
+ * Block until the offscreen document is listening.
+ *
+ * `createDocument()` resolves when the document exists — not when its module
+ * has executed and registered `onMessage`. Sending OFFSCREEN_START into that
+ * window loses it outright: no error is raised anywhere, capture state reads
+ * "active", and not one audio frame is ever captured. It only bites on the
+ * first capture after the worker wakes, which is exactly when it is hardest to
+ * reproduce and easiest to blame on something else.
+ */
+async function waitForOffscreen(): Promise<void> {
+  for (let attempt = 0; attempt < OFFSCREEN_READY_ATTEMPTS; attempt++) {
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: "OFFSCREEN_PING",
+      } satisfies ExtensionMessage);
+      if ((res as ExtensionMessage | undefined)?.type === "OFFSCREEN_READY") return;
+    } catch {
+      // "Receiving end does not exist" — the script has not run yet. Retry.
+    }
+    await new Promise((r) => setTimeout(r, OFFSCREEN_READY_POLL_MS));
+  }
+  // Fall through rather than throw: a capture attempt that might work is better
+  // than a guaranteed failure, and a dropped START now surfaces as the silence
+  // warning instead of passing silently.
+  console.warn("[SignStream] offscreen document did not answer readiness ping");
 }
 
 // ── Capture orchestration ────────────────────────────────────────────────────────
@@ -211,6 +259,10 @@ async function startCapture(tabId: number): Promise<void> {
   }
 
   await setCaptureState({ tabId }); // set first so relays reach the right tab
+  // A warning from the previous capture must not survive into this one, or a
+  // muted-tab notice outlives the tab it described.
+  pipeline.captureWarning = undefined;
+  pipeline.audioSilentMs = 0;
   try {
     // getMediaStreamId is callback-typed in @types/chrome — wrap as a promise.
     const streamId = await new Promise<string>((resolveId, rejectId) => {
@@ -370,7 +422,14 @@ chrome.runtime.onMessage.addListener(
         // grants activeTab — the gesture Chrome wanted before it would let us
         // capture. If a tab was queued for auto-start, this is the moment it
         // becomes possible, so the badged click starts signing on its own.
-        if (cached.pendingTabId !== null && !cached.active) {
+        //
+        // Gated on the sender NOT being a tab, because that gesture is the
+        // whole point. A content script asking the same question carries no
+        // gesture, so acting on it would spend the queued capture on an attempt
+        // Chrome must refuse — and clear `pendingTabId` in the process, so the
+        // badged toolbar click that WOULD have worked then does nothing.
+        // `sender.tab` is set for content scripts and undefined for the popup.
+        if (!_sender.tab && cached.pendingTabId !== null && !cached.active) {
           const tabId = cached.pendingTabId;
           void setCaptureState({ pendingTabId: null }).then(() => startCapture(tabId));
         }
@@ -449,6 +508,10 @@ chrome.runtime.onMessage.addListener(
         pipeline.audioFrames += 1;
         if (message.stats.sent) pipeline.audioSent += 1;
         pipeline.lastRms = message.stats.rms;
+        // Mirrors the offscreen watchdog so the Status page can show how long
+        // the silence has run, not just that the last frame happened to be flat.
+        pipeline.audioSilentMs =
+          message.stats.rms > 0 ? 0 : pipeline.audioSilentMs + message.stats.durationMs;
         // Verification: confirm frames arrive at the right cadence/level and
         // whether each was streamed to the cloud.
         console.debug(
@@ -457,6 +520,15 @@ chrome.runtime.onMessage.addListener(
             `(${message.stats.durationMs}ms, rms=${message.stats.rms.toFixed(4)}, ` +
             `sent=${message.stats.sent})`,
         );
+        return false;
+
+      case "CAPTURE_WARNING":
+        // Capture stays active — this is "running but useless", not "stopped".
+        pipeline.captureWarning = message.message ?? undefined;
+        if (message.message) console.warn(`[SignStream] ${message.message}`);
+        // Forward to the popup so an open Status page updates immediately
+        // rather than waiting for its next poll.
+        chrome.runtime.sendMessage(message).catch(() => {});
         return false;
 
       case "CLOUD_STATUS":

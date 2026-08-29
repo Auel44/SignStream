@@ -44,12 +44,67 @@ export interface BoneLink {
   limit?: number;
 }
 
+/**
+ * Landmark bones, by this rig's own naming.
+ *
+ * `calibrate`, `orientUpright` and `frameCamera` all need to find the same five
+ * places on a skeleton: the base of the spine, the neck, the head, and the two
+ * shoulders. Those used to be written into each of those functions as MakeHuman
+ * names (`spine05`, `upperarm01.L`), which silently meant "MakeHuman or
+ * nothing" — a VRM has none of those names, so calibration would fail and, as
+ * it does on failure, leave the basis as identity and the camera unframed.
+ *
+ * Naming them here instead is what lets a second skeleton exist at all.
+ */
+export interface Landmarks {
+  /** Base of the spine / pelvis. Bottom of the "up" measurement. */
+  hips: string;
+  /** Top of the "up" measurement. */
+  neck: string;
+  head: string;
+  /** Subject's left and right shoulder, which together give handedness. */
+  leftArm: string;
+  rightArm: string;
+}
+
 export interface Rig {
   id: string;
   label: string;
   /** File in the extension's root, published via web_accessible_resources. */
   file: string;
+  /**
+   * How to load `file`.
+   *
+   * `vrm` files are glTF underneath, but they must go through VRMLoaderPlugin
+   * to get a humanoid — and they are then driven through VRM's *normalized*
+   * bones rather than the raw skeleton, which is the entire reason for using
+   * the format: bone identity comes from the file, not from a name table.
+   */
+  format: "gltf" | "vrm";
   links: BoneLink[];
+  landmarks: Landmarks;
+  /**
+   * The direction a bone points, in its own local space — if it is the same for
+   * every bone in this rig.
+   *
+   * MakeHuman's rigs come off the FBX -> Blender -> glTF route with every bone
+   * pointing along its own +Y, which is Blender's convention and survives the
+   * export. Stating it explicitly keeps those rigs solving exactly as they were
+   * verified to.
+   *
+   * A VRM has no such convention. Its bind pose is a mandated T-pose and its
+   * normalized bones rest with identity rotations, so an arm bone points along
+   * world ±X and a spine bone along +Y — measured on the shipped avatar:
+   *
+   *     rightUpperArm      ( 1.00, -0.00, -0.00)   X+
+   *     rightIndexProximal ( 1.00, -0.00,  0.00)   X+
+   *     spine              ( 0.00,  1.00,  0.07)   Y+
+   *
+   * Leaving this undefined tells the retargeter to measure each bone's rest
+   * direction from the bind pose instead. Solving a VRM with the +Y assumption
+   * puts every arm and finger bone 90 degrees out.
+   */
+  boneAxis?: [number, number, number];
 }
 
 // ── Keypoint indices ────────────────────────────────────────────────────────
@@ -146,7 +201,95 @@ function makeHumanLinks(): BoneLink[] {
   return links;
 }
 
-// Every rig here shares MakeHuman's "Default simplified" skeleton — same 137
+/** MakeHuman landmark names, shared by all four shipped glTF rigs. */
+const MAKEHUMAN_LANDMARKS: Landmarks = {
+  hips: "spine05",
+  neck: "neck01",
+  head: "head",
+  leftArm: "upperarm01.L",
+  rightArm: "upperarm01.R",
+};
+
+/**
+ * VRM 1.0's standard humanoid skeleton.
+ *
+ * The contrast with `makeHumanLinks` is the argument for the format. There the
+ * bone names are a convention of one authoring tool, discovered by reading an
+ * export and transcribed by hand — which is why `boneKey` exists, and why 46 of
+ * 47 bones once failed to resolve over a dropped separator. Here the names are
+ * fixed by the specification, so this same map drives *any* VRM.
+ *
+ * Two structural differences from MakeHuman, both from the spec:
+ *
+ *   * There are no metacarpal bones for index/middle/ring/little. The hand
+ *     bone covers the palm, so each of those fingers is three bones, not four.
+ *   * The thumb is `Metacarpal, Proximal, Distal` — three bones like the rest,
+ *     rather than MakeHuman's thumb-off-the-wrist special case.
+ *
+ * There are also no twist bones, so the note about `upperarm02` does not apply:
+ * a VRM arm is one bone per segment, which is exactly what 2D clip data can
+ * inform and no more.
+ */
+function vrmLinks(): BoneLink[] {
+  const links: BoneLink[] = [];
+
+  links.push({ bone: "neck", from: NECK, to: NOSE });
+
+  for (const side of ["left", "right"] as const) {
+    const S = side === "left" ? "left" : "right";
+    const shoulder = side === "left" ? L_SHOULDER : R_SHOULDER;
+    const elbow = side === "left" ? L_ELBOW : R_ELBOW;
+    const wrist = side === "left" ? L_WRIST : R_WRIST;
+    const hand = side === "left" ? lh : rh;
+
+    links.push(
+      { bone: `${S}Shoulder`, from: NECK, to: shoulder },
+      { bone: `${S}UpperArm`, from: shoulder, to: elbow },
+      { bone: `${S}LowerArm`, from: elbow, to: wrist },
+      // As with MakeHuman: the middle finger's base is the most reliably
+      // tracked hand point and sits on the palm's axis.
+      { bone: `${S}Hand`, from: wrist, to: hand(FINGERS.middle[0]) },
+    );
+
+    // Thumb — CMC, MCP, IP in OpenPose terms, which map onto VRM's
+    // Metacarpal, Proximal, Distal.
+    const [t1, t2, t3, t4] = FINGERS.thumb;
+    links.push(
+      { bone: `${S}ThumbMetacarpal`, from: hand(t1), to: hand(t2), limit: FINGER_LIMIT },
+      { bone: `${S}ThumbProximal`, from: hand(t2), to: hand(t3), limit: FINGER_LIMIT },
+      { bone: `${S}ThumbDistal`, from: hand(t3), to: hand(t4), limit: FINGER_LIMIT },
+    );
+
+    const others = [
+      ["Index", FINGERS.index],
+      ["Middle", FINGERS.middle],
+      ["Ring", FINGERS.ring],
+      ["Little", FINGERS.pinky], // VRM calls the pinky "Little"
+    ] as const;
+
+    for (const [digit, chain] of others) {
+      const [a, b, c, d] = chain;
+      links.push(
+        { bone: `${S}${digit}Proximal`, from: hand(a), to: hand(b), limit: FINGER_LIMIT },
+        { bone: `${S}${digit}Intermediate`, from: hand(b), to: hand(c), limit: FINGER_LIMIT },
+        { bone: `${S}${digit}Distal`, from: hand(c), to: hand(d), limit: FINGER_LIMIT },
+      );
+    }
+  }
+
+  return links;
+}
+
+/** VRM landmark names. Fixed by the specification, so true of every VRM. */
+const VRM_LANDMARKS: Landmarks = {
+  hips: "hips",
+  neck: "neck",
+  head: "head",
+  leftArm: "leftUpperArm",
+  rightArm: "rightUpperArm",
+};
+
+// The four MakeHuman rigs share the "Default simplified" skeleton — same 137
 // bones, same `finger1-1.L` naming — so they all reuse one map. A model built
 // elsewhere (Mixamo's `mixamorig:LeftHandIndex1`, say) needs its own links
 // function and nothing more; the retargeter and renderer are unchanged.
@@ -164,25 +307,58 @@ export const RIGS: Rig[] = [
     id: "m1",
     label: "Signer 1",
     file: "avatar-m1.glb",
+    format: "gltf",
     links: makeHumanLinks(),
+    landmarks: MAKEHUMAN_LANDMARKS,
+    boneAxis: [0, 1, 0],
   },
   {
     id: "m2",
     label: "Signer 2",
     file: "avatar-m2.glb",
+    format: "gltf",
     links: makeHumanLinks(),
+    landmarks: MAKEHUMAN_LANDMARKS,
+    boneAxis: [0, 1, 0],
   },
   {
     id: "f1",
     label: "Signer 3",
     file: "avatar-f1.glb",
+    format: "gltf",
     links: makeHumanLinks(),
+    landmarks: MAKEHUMAN_LANDMARKS,
+    boneAxis: [0, 1, 0],
   },
   {
     id: "f2",
     label: "Signer 4",
     file: "avatar-f2.glb",
+    format: "gltf",
     links: makeHumanLinks(),
+    landmarks: MAKEHUMAN_LANDMARKS,
+    boneAxis: [0, 1, 0],
+  },
+  // Aurora, by Polygonal Mind — CC0, commercial use permitted, so it ships
+  // without the licence question hanging over the GPL-3.0 MMS-Player route the
+  // four rigs above came from.
+  //
+  // VRM 0.x, which three-vrm reads and normalises to the 1.0 humanoid, so
+  // nothing here has to care about the version. All 30 finger bones are mapped.
+  //
+  // Known gap: its 17 expressions are visemes and emotions, with no brow
+  // control, so ASL question marking is not reachable on this avatar. Non-manual
+  // markers need an avatar with brow blendshapes — a requirement for whatever
+  // ships, not for a first VRM.
+  {
+    id: "vrm1",
+    label: "Signer 5 (VRM)",
+    file: "avatar-vrm1.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+    // Deliberately no boneAxis — see the note on the field. A VRM's bones do
+    // not share one local axis and must be measured.
   },
 ];
 
@@ -308,6 +484,69 @@ export function restFrame(): { t: number; positions: V3[] } {
   }
 
   return { t: 0, positions: p };
+}
+
+// ── Depth for flat clips ────────────────────────────────────────────────────
+
+/**
+ * Where the arm sits, front to back, for a clip that has no depth at all.
+ *
+ * Every clip in the dictionary declares `"source": "openpose-2d"` and carries
+ * `z = 0` on every keypoint — not "at the body plane" but *unrecorded*. Solving
+ * them as written puts the whole arm in the signer's own coronal plane, so the
+ * hands end up inside the torso and render behind the chest. Measured on a real
+ * clip against the shipped VRM: the rest pose puts the hands 0.226 in front of
+ * the hips, a real clip puts them at -0.002.
+ *
+ * Depth cannot be recovered from a frontal projection, so it is supplied. These
+ * are the same values `restFrame` already uses for a signer waiting to sign, so
+ * a clip now begins roughly where rest leaves off instead of collapsing
+ * backwards into the body the moment one starts.
+ *
+ * The ramp matters more than the magnitude. The solver reads *differences*
+ * between keypoints, so pushing every point forward by the same amount would
+ * change nothing at all — it is the shoulder-to-elbow-to-wrist gradient that
+ * swings the arm out of the body plane.
+ *
+ * This is a substitute for depth, not depth. It cannot distinguish a sign that
+ * moves toward the chest from one that moves across it, which is a real
+ * phonemic contrast in ASL. Only 3D source data fixes that.
+ */
+const SIGNING_DEPTH = { elbow: 0.06, wrist: 0.2 };
+
+/**
+ * Give a flat clip frame a plausible front-to-back profile.
+ *
+ * Applied to clip data only. `restFrame` already carries depth and must not be
+ * offset twice.
+ */
+export function addSigningDepth(frame: {
+  t: number;
+  positions: V3[];
+}): { t: number; positions: V3[] } {
+  const p = frame.positions.map((q) => [q[0], q[1], q[2]] as V3);
+
+  // Only touch points the tracker actually saw. An untracked point is [0,0,0],
+  // and `tracked()` in the retargeter recognises it by x and y alone — so
+  // writing a z onto one would leave it untracked but no longer obviously so.
+  const put = (i: number, z: number): void => {
+    if (p[i] && (p[i][0] !== 0 || p[i][1] !== 0)) p[i][2] = z;
+  };
+
+  put(L_ELBOW, SIGNING_DEPTH.elbow);
+  put(R_ELBOW, SIGNING_DEPTH.elbow);
+  put(L_WRIST, SIGNING_DEPTH.wrist);
+  put(R_WRIST, SIGNING_DEPTH.wrist);
+
+  // The whole hand travels with the wrist. Giving the 21 hand points a depth
+  // *gradient* instead would tip every finger forward regardless of the
+  // handshape, which is worse than leaving the hand plane parallel to the body.
+  for (let i = 0; i < 21; i++) {
+    put(L_HAND + i, SIGNING_DEPTH.wrist);
+    put(R_HAND + i, SIGNING_DEPTH.wrist);
+  }
+
+  return { t: frame.t, positions: p };
 }
 
 export function rigById(id: string): Rig {

@@ -54,11 +54,21 @@ let seq = 0;
 let streaming = true;
 let reconnectTimer: number | undefined;
 let backoff = 1000;
+/** Consecutive all-zero frames, and whether we have already said so. */
+let silentFrames = 0;
+let silenceReported = false;
+/** Long enough that a pause between sentences never trips it. */
+const SILENCE_WARN_MS = 8000;
 
 // ── Message handling from the service worker ──────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((message: ExtensionMessage) => {
+chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
   switch (message.type) {
+    case "OFFSCREEN_PING":
+      // Answering proves this listener is registered, which is the only thing
+      // the service worker needs to know before it sends OFFSCREEN_START.
+      sendResponse({ type: "OFFSCREEN_READY" } satisfies ExtensionMessage);
+      break;
     case "OFFSCREEN_START":
       endpoint = message.wsEndpoint;
       language = message.language;
@@ -110,6 +120,37 @@ async function start(streamId: string): Promise<void> {
     video: false,
   });
 
+  // A tab capture can succeed and still carry no audio at all — the tab was
+  // producing none at the moment of capture, or a video-only stream came back.
+  // Without this check the graph builds happily and streams digital silence
+  // forever, which is indistinguishable downstream from a working pipeline
+  // whose speaker simply stopped talking.
+  const [track] = stream.getAudioTracks();
+  if (!track) {
+    stream.getTracks().forEach((t) => t.stop());
+    throw new Error(
+      "The captured tab has no audio track. Play the video first, then start SignStream.",
+    );
+  }
+
+  // `muted` here is the browser's own word for "this source is not delivering
+  // samples" — a muted tab, or audio the tab has stopped producing. It can flip
+  // in both directions while capture runs, so report rather than fail: the user
+  // unmuting the tab is a normal recovery and must not require a restart.
+  const reportTrackState = () => {
+    setCaptureWarning(
+      track.muted
+        ? "The captured tab is muted — Chrome is delivering silence. Unmute the tab to start signing."
+        : null,
+    );
+  };
+  track.addEventListener("mute", reportTrackState);
+  track.addEventListener("unmute", reportTrackState);
+  track.addEventListener("ended", () =>
+    setCaptureWarning("The captured tab stopped producing audio."),
+  );
+  reportTrackState();
+
   // Default-rate context keeps playback full quality; we downsample for ASR.
   const context = new AudioContext();
   const source = context.createMediaStreamSource(stream);
@@ -138,6 +179,15 @@ async function start(streamId: string): Promise<void> {
     numberOfInputs: 1,
     numberOfOutputs: 1,
     channelCount: 1,
+    // `channelCount: 1` alone does nothing: the default channelCountMode is
+    // "max", which ignores it and hands the worklet however many channels the
+    // source has. The worklet reads inputs[0][0], so on ordinary stereo tab
+    // audio that silently transcribed the LEFT CHANNEL ONLY — and anything
+    // mixed hard right reached ASR as silence. "explicit" makes the graph
+    // downmix stereo to mono before the tap, which is what the worklet has
+    // always claimed to receive.
+    channelCountMode: "explicit",
+    channelInterpretation: "speakers",
     // Shared constants cannot be imported into a worklet, so pass them in.
     processorOptions: {
       targetSampleRate: TARGET_SAMPLE_RATE,
@@ -166,6 +216,11 @@ function stop(): void {
     if (capture.context.state !== "closed") void capture.context.close();
     capture = null;
   }
+  // Reset the watchdog, or the next capture inherits this one's silence tally
+  // and either warns instantly or suppresses a warning it should have raised.
+  silentFrames = 0;
+  silenceReported = false;
+  setCaptureWarning(null);
   disconnect();
 }
 
@@ -178,6 +233,8 @@ function emit(frame: PcmFrameMessage): void {
   const open = streaming && socket?.readyState === WebSocket.OPEN;
   if (open) socket!.send(frame.pcm.buffer);
 
+  watchForSilence(frame.rms);
+
   void chrome.runtime.sendMessage({
     type: "AUDIO_CHUNK",
     stats: {
@@ -189,6 +246,40 @@ function emit(frame: PcmFrameMessage): void {
       sent: open,
     },
   } satisfies ExtensionMessage);
+}
+
+/**
+ * Notice a capture that is running but carrying nothing.
+ *
+ * The failure this exists for: capture succeeds, the socket opens, frames flow
+ * at a perfect 250 ms cadence — and every sample is zero. Everything upstream
+ * reports healthy, the avatar simply never signs, and the only trace is an
+ * `rms=0.000` column nobody is watching.
+ *
+ * The test is exact zero, not a threshold. Real audio, even a near-silent
+ * passage, carries dither and noise floor; all-zero samples mean the graph is
+ * connected to a source that is delivering nothing. A genuinely quiet moment in
+ * a video therefore does not trip this, so the warning stays trustworthy.
+ */
+function watchForSilence(rms: number): void {
+  if (rms > 0) {
+    silentFrames = 0;
+    if (silenceReported) {
+      silenceReported = false;
+      setCaptureWarning(null); // audio came back — clear it without a restart
+    }
+    return;
+  }
+
+  silentFrames += 1;
+  if (silentFrames * FRAME_MS >= SILENCE_WARN_MS && !silenceReported) {
+    silenceReported = true;
+    setCaptureWarning(
+      `Capturing silence for ${Math.round((silentFrames * FRAME_MS) / 1000)}s. ` +
+        "The tab may be muted, or SignStream may be capturing a different tab " +
+        "than the one playing.",
+    );
+  }
 }
 
 // ── WebSocket ───────────────────────────────────────────────────────────────────
@@ -277,6 +368,7 @@ function handleCloudMessage(data: unknown): void {
       type: "SIGN_ID",
       id: parsed.id,
       at: parsed.at,
+      fingerspell: parsed.fingerspell,
     } satisfies ExtensionMessage);
   } else if (parsed.type === "error") {
     reportError(new Error(parsed.message));
@@ -294,6 +386,18 @@ function setCloudStatus(connected: boolean): void {
 
 
 
+
+/**
+ * Report a capture that is live but useless. Separate from `reportError`, which
+ * declares capture dead: a muted tab must not flip the UI to "stopped", because
+ * capture really is still running and recovers the moment audio returns.
+ */
+function setCaptureWarning(message: string | null): void {
+  void chrome.runtime.sendMessage({
+    type: "CAPTURE_WARNING",
+    message,
+  } satisfies ExtensionMessage);
+}
 
 function reportError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);

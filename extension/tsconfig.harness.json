@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The harness is a plain web page — no chrome.* APIs to type.
+    "types": ["node", "vite/client"]
+  },
+  "include": ["dev-harness", "vite.harness.config.ts"]
+}

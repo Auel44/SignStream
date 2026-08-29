@@ -35,6 +35,7 @@
         "avatar-m2.glb",
         "avatar-f1.glb",
         "avatar-f2.glb",
+        "avatar-vrm1.vrm",
         "src/offscreen/pcm-worklet.js"
       ],
       "matches": [
