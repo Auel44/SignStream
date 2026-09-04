@@ -40,8 +40,26 @@ class Publisher:
             endpoint_url=websocket_endpoint,
         )
 
-    def push_sign_id_to_client(self, *, connection_id: str, sign_id: str) -> bool:
-        payload = {"type": "signId", "id": sign_id}
+    def push_sign_id_to_client(
+        self, *, connection_id: str, sign_id: str, fingerspell: bool = False
+    ) -> bool:
+        """Send one sign id to the browser.
+
+        `fingerspell` marks this as one letter of a spelled word rather than a
+        lexical sign, and the avatar plays it at FINGERSPELL_SPEED (2.2x) with a
+        much shorter cross-fade. That is not decoration: a five-letter word at
+        lexical pace is five ~1.5 s clips, so the avatar falls ~11 s behind the
+        speaker on a single word and the letters expire against MAX_SIGN_AGE_MS
+        before the word finishes.
+
+        Omitted, the client defaults it to false. This field was missing here
+        while the dev gateway sent it, so spelling ran at lexical pace in
+        production and at the right pace locally — the divergence that hides
+        longest.
+        """
+        payload: dict[str, object] = {"type": "signId", "id": sign_id}
+        if fingerspell:
+            payload["fingerspell"] = True
         try:
             self._ws.post_to_connection(
                 ConnectionId=connection_id,

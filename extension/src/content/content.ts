@@ -50,6 +50,10 @@ let signsDroppedNoAvatar = 0;
 // So it is detected and shut down once, quietly. Reloading the page is what
 // brings the overlay back, and the message says so.
 
+// First line out of the content script, so "is the page running the build I
+// just made?" is answerable at a glance rather than inferred from a stack.
+console.info(`[SignStream] content script build ${__BUILD_STAMP__}`);
+
 /** True while this script still belongs to a live extension. */
 function extensionAlive(): boolean {
   try {
@@ -70,6 +74,7 @@ function shutdownOrphan(): void {
   try {
     captions?.stop();
     captions = null;
+    window.clearTimeout(captionSilence);
     videoSync?.detach();
     videoSync = null;
     avatar?.clearQueue();
@@ -298,7 +303,13 @@ async function show(): Promise<void> {
  */
 function startCaptionFeed(): void {
   captions?.stop();
+  window.clearTimeout(captionSilence);
+
   captions = startCaptions(videoSync?.mediaElement ?? null, (cue) => {
+    // A cue is proof the caption feed is live, so ASR is redundant for as long
+    // as they keep arriving. Both calls are idempotent.
+    setAudioStreaming(false);
+    armCaptionSilence();
     notify({
       type: "MAP_TEXT",
       text: cue.text,
@@ -307,23 +318,35 @@ function startCaptionFeed(): void {
   });
 
   const live = videoSync?.isLive ?? false;
-  // Captions on a live stream carry no lookahead — they are produced as the
-  // broadcast happens — so they do not remove the need for ASR the way a
-  // recording's track does.
-  const captionsCoverIt = captions.source !== "none" && captions.lookahead && !live;
-  setAudioStreaming(!captionsCoverIt);
+  // Captions and ASR describe the SAME audio, so running both signs every
+  // sentence twice. Any working caption feed therefore replaces ASR outright.
+  //
+  // The test used to be `lookahead && !live`, which is the right question for
+  // whether a sign can be SCHEDULED ahead of playback but the wrong one for
+  // whether captions replace ASR. A DOM-scraped feed has no lookahead and still
+  // delivers every word, so both ran permanently: measured on one 13-minute
+  // video, 118 utterances came from captions and 62 from ASR, interleaved
+  // throughout rather than during a hand-over.
+  //
+  // `lookahead` still decides `mode` below, because it is what separates a sign
+  // scheduled for the moment its words are spoken from one that merely follows.
+  const haveCaptions = captions.source !== "none";
+  const captionsCoverIt = haveCaptions && captions.lookahead && !live;
+  setAudioStreaming(!haveCaptions);
+  if (haveCaptions) armCaptionSilence();
 
   mode = live
     ? "live-asr"
     : captionsCoverIt
       ? "captions"
-      : captions.source !== "none"
+      : haveCaptions
         ? "captions-live"
         : "recorded-asr";
 
   console.debug(
     `[SignStream] source=${mode} live=${live} captions=${captions.source}` +
-      ` lookahead=${captions.lookahead} audioStreaming=${!captionsCoverIt}`,
+      ` lookahead=${captions.lookahead} scheduled=${captionsCoverIt}` +
+      ` audioStreaming=${!haveCaptions}`,
   );
 }
 
@@ -348,16 +371,51 @@ function reconsiderSource(): void {
   if (expected !== mode || captions?.source === "none") startCaptionFeed();
 }
 
+/**
+ * Whether audio is currently being uploaded for transcription.
+ *
+ * Mirrors what the offscreen document was last told, so repeating a decision
+ * costs nothing — the cue handler calls this on every caption line.
+ */
+let asrStreaming = true;
+
 function setAudioStreaming(on: boolean): void {
+  if (on === asrStreaming) return;
+  asrStreaming = on;
   notify({
     type: "SET_AUDIO_STREAMING",
     enabled: on,
   } satisfies ExtensionMessage);
 }
 
+/**
+ * How long a caption feed may go quiet before ASR is brought back.
+ *
+ * Handing the words to captions means nothing is signed at all if that feed
+ * stops — the viewer switches subtitles off, the player swaps its caption
+ * element, the track ends early. Long enough not to trip on an ordinary pause
+ * in speech; short enough that a dead feed does not cost a whole scene. If it
+ * fires and captions later resume, the cue handler simply turns ASR off again.
+ */
+const CAPTION_SILENCE_MS = 15000;
+let captionSilence: number | undefined;
+
+function armCaptionSilence(): void {
+  window.clearTimeout(captionSilence);
+  captionSilence = window.setTimeout(() => {
+    console.debug("[SignStream] caption feed went quiet — falling back to ASR");
+    setAudioStreaming(true);
+  }, CAPTION_SILENCE_MS);
+}
+
 function hide(): void {
   captions?.stop();
   captions = null;
+  window.clearTimeout(captionSilence);
+  // A restarted capture brings up a fresh offscreen document that streams by
+  // default, so the mirror has to forget what the old one was told or the next
+  // "stop streaming" would be suppressed as a no-op.
+  asrStreaming = true;
   videoSync?.detach();
   videoSync = null;
   avatar?.clearQueue();

@@ -39,3 +39,11 @@ data/processed/
 .DS_Store
 Thumbs.db
 *.swp
+
+# ── Generated documents ─────────────────────────────────────────────────────
+# docs/SignStream-Explained.docx is a reading/defence aid, not a deliverable,
+# and it is regenerated from tools/docs/make_explainer.py — which IS tracked,
+# so nothing is lost by keeping the binary out of the repo.
+docs/*.docx
+# Word's lock file, written while a document is open.
+~$*

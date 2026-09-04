@@ -269,6 +269,24 @@ async def handle(ws: ServerConnection) -> None:
                 at = control.get("at")
                 if text:
                     log.info("2 CAPTION %r  @%.1fs", text, float(at or 0))
+                    # Send the words back as a transcript as well as signing
+                    # them.
+                    #
+                    # The overlay's caption line is fed by `transcript` frames,
+                    # and this path used to emit none — it only produced sign
+                    # ids. That went unnoticed while ASR ran alongside the
+                    # caption feed and supplied the text as a side effect. The
+                    # moment ASR was switched off for captioned video (it was
+                    # duplicating every sign), the caption line went blank even
+                    # though the words were right here.
+                    #
+                    # Marked final because a caption cue IS final — it is the
+                    # publisher's own text, not a hypothesis being refined.
+                    await ws.send(json.dumps({
+                        "type": "transcript",
+                        "text": text,
+                        "isFinal": True,
+                    }))
                     await send_signs(ws, text, language, float(at) if at is not None else None)
             elif action == "simulateTranscript":
                 # DEV ONLY — no production counterpart. Lets the sign path be

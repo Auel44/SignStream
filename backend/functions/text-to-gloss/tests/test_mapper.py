@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from fingerspell import MAX_SPELLED_PER_UTTERANCE
 from mapper import Dictionary, map_tokens, to_sign_id
 
 
@@ -206,11 +207,26 @@ def test_long_words_are_not_spelled() -> None:
     assert map_tokens(["revolutionary"], Dictionary("ASL", {}), alphabet) == []
 
 
-def test_only_one_word_is_spelled_per_utterance() -> None:
-    """Spelling several in a row starves every lexical sign behind them."""
+def test_every_unknown_word_in_an_utterance_is_spelled() -> None:
+    """An utterance is rendered in full: each word is either signed or spelled.
+
+    This budget was 1, so a sentence with two names dropped the second one
+    silently. Dropping a name is not a smaller error than spelling it slowly,
+    and the stale-sign queue already trims a run that overruns its media time,
+    so the cap exists only to stop an unbounded run.
+    """
     alphabet = frozenset("abcdefghijklmnopqrstuvwxyz")
     signs = map_tokens(["kofi", "yaw"], Dictionary("ASL", {}), alphabet)
-    assert {s.source_tokens[0] for s in signs} == {"kofi"}
+    assert {s.source_tokens[0] for s in signs} == {"kofi", "yaw"}
+
+
+def test_spelling_is_capped_per_utterance() -> None:
+    """Past the cap, words are dropped rather than queueing minutes of letters."""
+    alphabet = frozenset("abcdefghijklmnopqrstuvwxyz")
+    words = [f"kofi{i}"[:4] + chr(ord("a") + i) for i in range(MAX_SPELLED_PER_UTTERANCE + 3)]
+    signs = map_tokens(words, Dictionary("ASL", {}), alphabet)
+    spelled = {s.source_tokens[0] for s in signs}
+    assert len(spelled) == MAX_SPELLED_PER_UTTERANCE
 
 
 def test_only_proper_nouns_are_spelled() -> None:
@@ -224,3 +240,26 @@ def test_only_proper_nouns_are_spelled() -> None:
     assert map_tokens(["ever"], d, alphabet, spellable={"kofi"}) == []
     spelled = map_tokens(["kofi"], d, alphabet, spellable={"kofi"})
     assert [s.sign_id for s in spelled] == ["asl-k-v1", "asl-o-v1", "asl-f-v1", "asl-i-v1"]
+
+
+def test_bundled_alphabet_matches_the_shipped_manifest() -> None:
+    """The Lambda cannot see the clips, so it reads a snapshot of them.
+
+    If this drifts from `dictionary/`, run backend/scripts/build-alphabets.py.
+    """
+    from fingerspell import bundled_alphabet
+
+    asl = bundled_alphabet("ASL")
+    assert asl, "ASL alphabet is empty - alphabets.json missing or unreadable"
+    # GhSL inherited the ASL manual alphabet, so the two must match exactly.
+    assert bundled_alphabet("GhSL") == asl
+    # Case-insensitive, because callers pass the canonical "GhSL".
+    assert bundled_alphabet("ghsl") == asl
+
+
+def test_bundled_alphabet_is_empty_for_unknown_languages() -> None:
+    """Failing closed: no alphabet means no spelling, never partial spelling."""
+    from fingerspell import bundled_alphabet
+
+    assert bundled_alphabet("BSL") == frozenset()
+    assert bundled_alphabet("../../etc/passwd") == frozenset()

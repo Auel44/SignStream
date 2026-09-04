@@ -72,8 +72,10 @@ export interface ExtensionSettings {
    * Which rigged model signs. Ids come from content/rigs.ts.
    *
    * Everything a model needs — file name and the keypoint-to-bone mapping — is
-   * data in that file, so adding an avatar is a new entry there plus a .glb in
-   * public/. No renderer changes.
+   * data in that file, so adding an avatar is a new entry there plus the model
+   * in public/ and manifest.json's web_accessible_resources. No renderer
+   * changes. All twelve shipped rigs are .vrm, where bone identity comes from
+   * the file's own humanoid and no name table is needed.
    */
   avatarModel: string;
   /** Begin signing as soon as audio is detected on a stream. */
@@ -139,7 +141,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   avatarSize: "medium",
   avatarContrast: "standard",
   avatarBackdrop: "studio",
-  avatarModel: "m1",
+  avatarModel: "vrm1",
   autoStart: true,
   // Default to hearing the audio: it matches what the tab did before the
   // extension was installed, so enabling SignStream never silently mutes a
@@ -336,6 +338,25 @@ export type ExtensionMessage =
    */
   | { type: "SET_AUDIO_STREAMING"; enabled: boolean }
   | { type: "OFFSCREEN_SET_STREAMING"; enabled: boolean }
+  /**
+   * Fetch a clip on the content script's behalf.
+   *
+   * The content script cannot fetch the dictionary itself. Its `fetch` carries
+   * the PAGE's origin, so a clip on `http://localhost:8081` is a request from
+   * `https://www.youtube.com` into the loopback address space, which Chrome
+   * blocks outright:
+   *
+   *   "blocked by CORS policy: Permission was denied for this request to
+   *    access the `loopback` address space."
+   *
+   * Every clip failed that way, so the avatar had nothing to play. The service
+   * worker has the extension's own origin and host permissions, and is not
+   * subject to the page's rules — so the fetch moves there and the bytes come
+   * back over the message channel.
+   */
+  | { type: "FETCH_CLIP"; url: string }
+  /** `status` is the HTTP status, or 0 when the request never completed. */
+  | { type: "CLIP_DATA"; status: number; body: unknown }
   // diagnostics (popup → service worker → content, and back)
   | { type: "GET_DIAGNOSTICS" }
   | { type: "DIAGNOSTICS"; diagnostics: Diagnostics }
@@ -380,4 +401,19 @@ export interface SignClip {
   /** Ordered joint names; indexes line up with each frame's `positions`. */
   joints: string[];
   frames: SignClipFrame[];
+  /**
+   * Sign id this clip was copied from, when it is not an original recording.
+   *
+   * Set only for the manual alphabet. GhSL inherited its fingerspelling from
+   * ASL via Andrew Foster in 1957, so the letter handshapes genuinely are the
+   * same and the ASL letter clips are the correct data rather than a stand-in.
+   * Lexical signs are never shared this way.
+   *
+   * Recorded so the provenance survives in the file: without it these are
+   * indistinguishable from clips recorded by a Ghanaian signer, and a later
+   * reader would have no reason to check.
+   */
+  derivedFrom?: string;
+  /** Human-readable reason for `derivedFrom`. */
+  derivedNote?: string;
 }

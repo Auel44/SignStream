@@ -23,19 +23,33 @@ alphabet is read from the clips that actually exist on disk (see
 fingerspell that word. There is no interpolation, no substitution, no
 "close enough" handshape.
 
-Current data (see `scripts/audit_alphabet.py`):
+Current data (see pose-generator/src/audit_alphabet.py):
     ASL  — 20 of 26 letters. Missing a, c, l, x, y, z.
-    GhSL —  0 of 26.
+    GhSL — 20 of 26, the same set.
+
+GhSL inherited the ASL manual alphabet through Andrew Foster in 1957, so the
+letter clips are shared rather than approximated — see
+pose-generator/src/copy_alphabet.py. Both languages therefore unlock together
+when those six letters land.
 
 Neither can spell yet. The wiring is complete and switches itself on per
 letter as clips land, so filling those gaps is a data task, not a code task.
+
+Pace: a spelled letter is flagged to the client and played at 2.2x. That is
+what makes the feature usable rather than a nicety — at 1x the mean letter clip
+is 1,244 ms, so a five-letter word runs 6.22 s and expires against the avatar's
+6 s MAX_SIGN_AGE_MS before it finishes, arriving as a word with letters missing.
+At 2.2x it is 2.83 s, and even the 8-letter maximum fits in 4.5 s.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
+from importlib.resources import files
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +101,45 @@ def load_alphabet(language: str, available_sign_ids: set[str]) -> frozenset[str]
         for code in range(ord("a"), ord("z") + 1)
         if f"{prefix}-{chr(code)}-v1" in available_sign_ids
     )
+
+
+#: Snapshot of `load_alphabet`'s answer, written by
+#: backend/scripts/build-alphabets.py. Cached per process like the dictionaries.
+_BUNDLED: dict[str, frozenset[str]] | None = None
+
+
+def bundled_alphabet(language: str) -> frozenset[str]:
+    """Letters `language` can spell, read from the manifest shipped beside it.
+
+    The dev gateway derives this from the clip files directly because it has
+    `dictionary/` mounted. The Lambda does not — the clips live on the CDN and
+    are fetched by the browser — so it reads the snapshot instead. Same answer,
+    different source.
+
+    Returns an empty set if the manifest is absent or does not mention the
+    language, which disables spelling for it. That is the safe direction: no
+    fingerspelling renders the word as nothing and lets the caption carry it,
+    whereas a wrongly-permissive alphabet renders a word with a letter missing,
+    which reads as a different word.
+    """
+    global _BUNDLED
+    if _BUNDLED is None:
+        try:
+            resource = files("dictionaries").joinpath("alphabets.json")
+            raw = json.loads(resource.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ModuleNotFoundError, OSError):
+            # Same fallback as Dictionary.load: the module is not installed as
+            # a package under local pytest.
+            fallback = Path(__file__).resolve().parent / "dictionaries" / "alphabets.json"
+            try:
+                raw = json.loads(fallback.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                log.warning("no alphabets.json; fingerspelling disabled")
+                raw = {}
+        # Keyed case-insensitively: callers pass the canonical "GhSL" while the
+        # manifest and the allowlist disagree on casing.
+        _BUNDLED = {k.upper(): frozenset(v) for k, v in raw.items()}
+    return _BUNDLED.get(language.upper(), frozenset())
 
 
 def can_spell(word: str, alphabet: frozenset[str]) -> bool:

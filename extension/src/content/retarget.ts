@@ -67,6 +67,122 @@ const DEFAULT_BONE_AXIS = new THREE.Vector3(0, 1, 0);
  */
 const MIN_SEGMENT = 0.012;
 
+/**
+ * How far a finger joint may bend the WRONG way, in degrees.
+ *
+ * Not zero: a real finger hyperextends a little, and forcing an exact floor
+ * makes a relaxed hand look locked. Anything past this is tracker noise.
+ */
+const MAX_HYPEREXTENSION = 8;
+
+/**
+ * Off-hinge freedom, in degrees, for the joints that have some.
+ *
+ * The knuckle (Proximal/Metacarpal) genuinely abducts — fingers spread — so it
+ * is a hinge with slack rather than a pure one. The joints beyond it do not:
+ * they are pure hinges, and giving them any freedom is what let noise push them
+ * sideways.
+ *
+ * Raised from 18. At 18 the hand rendered as a paddle: measured over 32 clips
+ * and all 12 rigs, the mean angle between adjacent fingers' knuckle bones was
+ * 14.8 degrees in the source clips but only 6.3 degrees on screen — 57% of the
+ * spread a real hand shows was being clamped away. This is the number the user
+ * sees as "fingers clamped together".
+ *
+ * It is safe to raise only because the direction filter now cleans the
+ * constraint's input (see Solved.dirFilter); this budget absorbs genuine
+ * abduction plus any error in the measured hinge axis, so setting it to bare
+ * anatomy would clamp real motion whenever that axis is slightly off.
+ *
+ * Swept rather than guessed, on the shipped rigs and clips:
+ *
+ *     25 deg -> 48% of source spread kept, max joint rotation 114 deg
+ *     35 deg -> 56%                        119 deg
+ *     40 deg -> 59%                        122 deg   <- chosen
+ *     45 deg -> 62%                        124 deg
+ *     50 deg -> 66%                        178 deg   <- fingers fold backwards
+ *
+ * There is a cliff between 45 and 50 where the off-axis budget grows large
+ * enough to let a joint invert. 40 sits clear of it with margin on every rig.
+ * Re-swept after the fingertip axis fix in `axisFor`, which changed the solve;
+ * the cliff did not move.
+ */
+const KNUCKLE_OFF_AXIS = 40;
+
+/**
+ * Fastest a finger joint may rotate, in degrees per second.
+ *
+ * The visible twitch was never mostly direction reversals — those measured only
+ * 1.6% once the direction filter was in. It was the SIZE of single-frame steps:
+ * across 20 clips, 16.4% of finger frames moved more than 2 degrees, 3.7% moved
+ * more than 5, and the worst moved 17.6 degrees in one 60 Hz frame. That is
+ * 1,056 deg/s, which no finger does; it reads as a pop.
+ *
+ * Two things produce those steps and neither is real motion. A keypoint that is
+ * untracked in one source frame and tracked in the next makes the interpolated
+ * position jump rather than ramp (blending toward an untracked [0,0,0] would
+ * drag the joint to the origin, so the tracked side is taken whole). And a
+ * segment crossing MIN_SEGMENT flips between held and solved.
+ *
+ * Measured in CLIP time, not wall time — `apply` is handed the clip-time step,
+ * so this bounds motion relative to the recorded performance. A clip played at
+ * 2.2x for fingerspelling is allowed to move 2.2x faster; a wall-clock limit
+ * would silently undo that speed-up.
+ *
+ * This is a speed limit, not a smoother: it never changes where a joint is
+ * heading, only how fast it may get there. Swept on the shipped clips, and it
+ * costs nothing — finger spread stayed at 59% and mean curl at 37.6 degrees at
+ * every value tested, down to 150 deg/s, so the poses are still fully reached:
+ *
+ *     uncapped   max step 17.6 deg/frame,  3.7% of frames over 5 deg
+ *     600 deg/s          10.0             3.7%
+ *     400 deg/s           6.7             4.0%
+ *     300 deg/s           5.0             1.3%   <- chosen
+ *     200 deg/s           3.3             0.0%
+ *
+ * 300 removes the steps that read as a pop while leaving real signing speed
+ * untouched, and fingerspelling still gets 660 deg/s of effective headroom.
+ * Re-swept after the wrist roll and the arm-chain cap landed: finger spread is
+ * 56% at every value from 300 to 700, so the limit still costs nothing, and 300
+ * gives the lowest peak joint rotation of the four.
+ */
+const MAX_FINGER_DEG_PER_S = 300;
+
+/**
+ * How far the wrist may roll from its rest orientation, in degrees.
+ *
+ * Forearm pronation and supination give a real wrist roughly a quarter turn
+ * each way from neutral. Past that the hand is not rolling, the solve is.
+ */
+const MAX_WRIST_ROLL = 100;
+
+/**
+ * Fastest any non-finger bone may rotate, in degrees per second of clip time.
+ *
+ * The finger cap left the arm chain untouched, and that is where the remaining
+ * pops were. Measured at 60 Hz over 25 clips, before this existed:
+ *
+ *     shoulder      max   66 deg/s
+ *     upper arm     max  601 deg/s
+ *     forearm       max 2107 deg/s   <- not a human movement
+ *     hand          max 2172 deg/s   <- not a human movement
+ *
+ * A forearm or wrist can reach roughly 1000 deg/s in a fast flick and far less
+ * in signing, so 900 passes everything real and stops only the steps that come
+ * from a keypoint appearing, disappearing, or jumping between source frames.
+ */
+const MAX_BONE_DEG_PER_S = 900;
+
+/**
+ * Fastest the wrist may roll, in degrees per second of clip time.
+ *
+ * The branch chosen below can still change when the hand passes edge-on and
+ * the evidence genuinely flips. Rate-limiting turns that into a fast turn
+ * rather than an instant 180 degree snap.
+ */
+const MAX_ROLL_DEG_PER_S = 360;
+
+
 /** Neutral standing pose, solved through the normal path. See rigs.restFrame. */
 const REST = restFrame();
 
@@ -120,6 +236,49 @@ interface Solved {
    */
   gap: THREE.Quaternion;
   /**
+   * Flexion axis for a hinge joint, in the bone's parent space.
+   *
+   * A finger's middle and end joints are pure hinges: they flex and extend and
+   * do nothing else. Solving them as a free swing lets 2D tracker noise rotate
+   * them sideways and backwards, which is anatomically impossible and is what
+   * reads as twitching — measured at 2.1% of finger frames reversing direction,
+   * with 13.1% pinned against the anatomical limit.
+   *
+   * The axis is measured from the rest pose rather than declared: `restFrame`
+   * curls every finger about its natural flexion axis, so the rotation it
+   * produces from the bind pose IS that axis. Nothing rig-specific is assumed.
+   */
+  hinge?: THREE.Vector3;
+  /** How far off the hinge this joint may rotate, in radians. 0 = pure hinge. */
+  offAxis: number;
+  /**
+   * Previous frame's target direction for this bone, in clip space.
+   *
+   * Finger directions are filtered over time BEFORE the anatomical constraint
+   * runs, which is the whole point of keeping it here. The old order was
+   * noisy direction -> hard clamp -> smooth the result, and a clamp fed noise
+   * fires constantly: measured over 32 clips it discarded 57% of the finger
+   * spread the source actually contained, so the hand rendered as a paddle.
+   *
+   * Filtering first means the constraint sees motion rather than jitter, fires
+   * rarely, and can then afford to allow the abduction a real hand has.
+   *
+   * Held in CLIP space deliberately. Parent space rotates as the arm moves, so
+   * a filter there would drag every finger toward where it pointed before the
+   * hand turned.
+   */
+  dirFilter?: THREE.Vector3;
+  /**
+   * Where this bone's roll reference points at REST, in the bone's own space.
+   *
+   * Measured rather than declared, from the rest pose the rig already defines.
+   * The per-frame roll is then "how far has the knuckle line turned about the
+   * palm axis since rest", which needs no per-rig constant.
+   */
+  rollRef?: THREE.Vector3;
+  /** Previous frame's chosen roll angle, in radians. Resolves the 2D branch. */
+  rollPrev?: number;
+  /**
    * The bone's rotation as modelled, kept so `reset` can restore it.
    *
    * Solving replaces this rotation outright (swing-only, see `apply`), so the
@@ -134,6 +293,8 @@ export class Retargeter {
   private solved: Solved[] = [];
   /** World rotation per solved bone, rebuilt each frame. */
   private world: THREE.Quaternion[] = [];
+  /** Previous frame's local rotation, for the finger speed limit. */
+  private prev: THREE.Quaternion[] = [];
   /** Keyed by `boneKey`, not by literal name — see the note there. */
   private readonly bones = new Map<string, THREE.Object3D>();
   private readonly missing: string[] = [];
@@ -149,6 +310,18 @@ export class Retargeter {
   private readonly axis = new THREE.Vector3();
   /** Driven ancestor's world rotation combined with `gap`, rebuilt per bone. */
   private readonly parentWorld = new THREE.Quaternion();
+  private readonly twist = new THREE.Quaternion();
+  private readonly swing = new THREE.Quaternion();
+  private readonly scratch = new THREE.Quaternion();
+  /** Target of the finger speed limit, kept off `scratch` which it also uses. */
+  private readonly capped = new THREE.Quaternion();
+  private readonly rollNow = new THREE.Vector3();
+  private readonly rollWant = new THREE.Vector3();
+  private readonly rollCross = new THREE.Vector3();
+  private readonly rollQ = new THREE.Quaternion();
+  /** Roll allowance for the current frame, set by `apply` from its dt. */
+  private rollStep = 0;
+
 
   /**
    * @param mirrorX Flip left/right. A camera sees a signer mirrored, so whether
@@ -296,13 +469,31 @@ export class Retargeter {
       }
     }
     // A tip bone (a distal phalanx) continues nowhere, so fall back to whatever
-    // single child it has, and to +Y if it is a leaf.
+    // single child it has.
     child ??= bone.children.find((c) => c.position.lengthSq() > 1e-12) ?? null;
-    if (!child) return DEFAULT_BONE_AXIS.clone();
 
-    const axis = child.position.clone();
-    if (axis.lengthSq() < 1e-12) return DEFAULT_BONE_AXIS.clone();
-    return axis.normalize();
+    if (child) {
+      const axis = child.position.clone();
+      if (axis.lengthSq() > 1e-12) return axis.normalize();
+    }
+
+    // Leaf bone: take the direction its PARENT points instead.
+    //
+    // This is the common case, not an edge case. VRM's humanoid defines no
+    // fingertip bones, so every Distal phalanx is a leaf on every rig, and
+    // falling through to +Y gave all twenty of them an axis 90 degrees from the
+    // truth — VRM's normalized finger bones rest along +/-X. Measured on the
+    // shipped rigs, every fingertip sat bent about 100 degrees at rest, which
+    // is a claw, and solved just as wrongly in motion.
+    //
+    // `bone.position` is this bone's offset from its parent, which is the
+    // direction the parent points. A normalized VRM rests with every bone at
+    // identity rotation, so the parent's frame and this bone's frame are
+    // aligned and that vector needs no conversion. Anatomically it is also the
+    // right answer: a fingertip continues the finger.
+    const fromParent = bone.position.clone();
+    if (fromParent.lengthSq() > 1e-12) return fromParent.normalize();
+    return DEFAULT_BONE_AXIS.clone();
   }
 
   private build(): void {
@@ -354,10 +545,79 @@ export class Retargeter {
         // Measured before anything is posed — `apply` overwrites the very
         // rotations this reads, so it can only be done now.
         axis: this.axisFor(bone, link),
+        // The knuckle genuinely abducts, so it is a hinge with slack. Every
+        // joint beyond it is a pure hinge. Non-finger bones stay unconstrained.
+        offAxis:
+          link.limit === undefined
+            ? Infinity
+            : /Proximal$|Metacarpal$|-1\.[LR]$/.test(link.bone)
+              ? (KNUCKLE_OFF_AXIS * Math.PI) / 180
+              : 0,
       };
     });
 
     this.world = this.solved.map(() => new THREE.Quaternion());
+    this.prev = this.solved.map((s) => s.bind.clone());
+    this.measureHinges();
+    this.measureRolls();
+  }
+
+  /**
+   * Record each finger joint's flexion axis, measured from the rest pose.
+   *
+   * `restFrame` curls every finger about the axis a real one bends on, so the
+   * rotation it produces away from the bind pose points along that axis. Taking
+   * it from there means no per-rig table and no assumption about how a
+   * particular skeleton is built — a rig whose fingers rest straight simply
+   * yields no hinge and keeps the old free-swing behaviour.
+   */
+  /**
+   * Record where each roll-controlled bone's reference direction sits at rest.
+   *
+   * Taken in the bone's own space, so a frame's roll is measured as a turn away
+   * from rest rather than against any absolute direction — the same trick
+   * `measureHinges` uses, and for the same reason: nothing rig-specific is
+   * assumed and a rig that cannot supply the reference simply keeps the old
+   * swing-only behaviour.
+   */
+  private measureRolls(): void {
+    const before = this.solved.map((s) => s.bone.quaternion.clone());
+    this.reset();
+
+    const v = new THREE.Vector3();
+    const inv = new THREE.Quaternion();
+    for (let i = 0; i < this.solved.length; i++) {
+      const s = this.solved[i];
+      const { rollFrom, rollTo } = s.link;
+      if (rollFrom === undefined || rollTo === undefined) continue;
+      const a = REST.positions[rollFrom];
+      const b = REST.positions[rollTo];
+      if (!tracked(a) || !tracked(b)) continue;
+      v.set((b[0] - a[0]) * (this.mirrorX ? -1 : 1), b[1] - a[1], b[2] - a[2]);
+      if (this.calibrated) v.applyMatrix4(this.basis);
+      if (v.lengthSq() < 1e-8) continue;
+      v.normalize().applyQuaternion(inv.copy(this.world[i]).invert());
+      s.rollRef = v.clone();
+    }
+
+    this.solved.forEach((s, i) => s.bone.quaternion.copy(before[i]));
+  }
+
+  private measureHinges(): void {
+    const before = this.solved.map((s) => s.bone.quaternion.clone());
+    this.reset();
+
+    const delta = new THREE.Quaternion();
+    for (const s of this.solved) {
+      if (s.link.limit === undefined) continue;
+      delta.copy(s.bind).invert().multiply(s.bone.quaternion);
+      const axis = new THREE.Vector3(delta.x, delta.y, delta.z);
+      // A rest curl too small to point anywhere leaves the joint unconstrained
+      // rather than pinned to a guessed axis.
+      if (axis.lengthSq() > 1e-8) s.hinge = axis.normalize();
+    }
+
+    this.solved.forEach((s, i) => s.bone.quaternion.copy(before[i]));
   }
 
   /**
@@ -378,8 +638,14 @@ export class Retargeter {
    *
    * Defaults to `mix`, so `reset` and any caller wanting a hard snap gets one.
    */
-  apply(frame: SignClipFrame, mix = 1, fingerMix = mix): void {
+  apply(frame: SignClipFrame, mix = 1, fingerMix = mix, dtMs = 0): void {
     const pos = frame.positions;
+    // Frames-per-second independent: the cap is a speed, so it has to be
+    // converted with the real elapsed time. dtMs = 0 means "no cap", which
+    // keeps `reset` and the offline harnesses solving exactly as before.
+    const maxStep = dtMs > 0 ? (MAX_FINGER_DEG_PER_S * Math.PI * dtMs) / 180000 : 0;
+    const maxBoneStep = dtMs > 0 ? (MAX_BONE_DEG_PER_S * Math.PI * dtMs) / 180000 : 0;
+    this.rollStep = dtMs > 0 ? (MAX_ROLL_DEG_PER_S * Math.PI * dtMs) / 180000 : 0;
 
     for (let i = 0; i < this.solved.length; i++) {
       const s = this.solved[i];
@@ -414,6 +680,25 @@ export class Retargeter {
       if (this.calibrated) this.dir.applyMatrix4(this.basis);
       this.dir.normalize();
 
+      // Smooth a finger's target direction across frames, in clip space, before
+      // anything constrains it. See Solved.dirFilter for why this comes first.
+      if (s.link.limit !== undefined && fingerMix < 1) {
+        if (s.dirFilter) {
+          s.dirFilter.lerp(this.dir, fingerMix);
+          if (s.dirFilter.lengthSq() > 1e-8) {
+            s.dirFilter.normalize();
+            this.dir.copy(s.dirFilter);
+          } else {
+            // The filter passed through the origin, which only happens when the
+            // direction reversed outright. Restart from the new direction
+            // rather than normalising a zero vector.
+            s.dirFilter.copy(this.dir);
+          }
+        } else {
+          s.dirFilter = this.dir.clone();
+        }
+      }
+
       // Into the parent's space, so the result is a valid local rotation.
       this.inv.copy(parentWorld).invert();
       this.dir.applyQuaternion(this.inv);
@@ -424,31 +709,202 @@ export class Retargeter {
       // all. Inventing one makes forearms and fingers visibly wrong.
       this.q.setFromUnitVectors(s.axis, this.dir);
 
-      // Anatomical clamp. The rest pose has each phalanx roughly in line with
-      // its parent, so this rotation's magnitude is the joint's bend — and a
-      // finger that bends past ~110 degrees has folded through the palm. The
-      // cause is tracker noise in 2D source data, not real motion.
-      const limit = s.link.limit;
-      if (limit !== undefined) {
-        const angle = 2 * Math.acos(Math.min(1, Math.abs(this.q.w)));
-        const max = (limit * Math.PI) / 180;
-        if (angle > max) {
-          this.axis.set(this.q.x, this.q.y, this.q.z);
-          if (this.axis.lengthSq() > 1e-12) {
-            this.axis.normalize();
-            this.q.setFromAxisAngle(this.axis, this.q.w < 0 ? -max : max);
-          }
-        }
+      // Add the roll the swing could not know about. Only for a bone that
+      // states a reference pair — for everything else a direction genuinely
+      // carries no twist and inventing one makes forearms visibly wrong.
+      if (s.rollRef) this.applyRoll(s, pos);
+
+      // Constrain a finger joint to the way a finger actually moves.
+      //
+      // This replaced a plain magnitude clamp, which limited how far a joint
+      // bent but not which way. Free swing plus 2D tracker noise put fingers
+      // sideways and backwards through the palm, and the clamp then stopped
+      // them dead against a wall: measured over 34 clips, 2.1% of finger frames
+      // reversed direction and 13.1% sat pinned at the limit. A hard stop hit
+      // once every eight frames is not a safeguard, it is the twitch.
+      if (s.link.limit !== undefined) this.constrainJoint(s);
+
+      // Take only this bone's share of the turn, leaving the rest for the bone
+      // below it to solve against. See BoneLink.share.
+      const share = s.link.share;
+      if (share !== undefined && share < 1) {
+        this.scratch.identity().slerp(this.q, share);
+        this.q.copy(this.scratch);
       }
 
       // Finger joints are exactly the bones carrying an anatomical limit, so
       // that flag already tells the two classes apart.
-      const m = s.link.limit !== undefined ? fingerMix : mix;
+      //
+      // Both filters are kept, and they do different jobs. The direction filter
+      // above cleans the constraint's INPUT, so it stops eating real spread;
+      // this one cleans its OUTPUT, since a clamp can still step discontinuously
+      // when it engages. Measured over 32 clips: input filter alone left 8.3% of
+      // finger frames reversing direction, output alone 5.4%, both 1.6%.
+      // Verified with `node tools/rt/fingers.mjs`.
+      const isFinger = s.link.limit !== undefined;
+      const m = isFinger ? fingerMix : mix;
       if (m >= 1) s.bone.quaternion.copy(this.q);
       else s.bone.quaternion.slerp(this.q, m);
 
+      // Hold every joint to a speed it can actually reach. Applied last, on the
+      // rotation that is about to be shown, so it catches a step no matter
+      // which stage produced it.
+      const cap = isFinger ? maxStep : maxBoneStep;
+      if (cap > 0) {
+        this.scratch.copy(this.prev[i]).invert().multiply(s.bone.quaternion);
+        const step = 2 * Math.acos(Math.min(1, Math.abs(this.scratch.w)));
+        if (step > cap) {
+          // Rotate only as far along the same arc as the limit allows: the
+          // destination is unchanged, only the approach is slowed.
+          //
+          // The target is the SMOOTHED rotation just written, not the raw
+          // solve in `this.q`. Measuring the step against one arc and then
+          // travelling along the other overshoots it — done that way the cap
+          // made the worst single-frame jump worse, 17.6 degrees to 95.
+          this.capped.copy(s.bone.quaternion);
+          s.bone.quaternion.copy(this.prev[i]).slerp(this.capped, cap / step);
+        }
+      }
+      this.prev[i].copy(s.bone.quaternion);
+
+
       this.world[i].copy(parentWorld).multiply(s.bone.quaternion);
     }
+  }
+
+  /**
+   * Rotate `this.q` about the bone's own axis so the roll reference lines up.
+   *
+   * `this.dir` is the target direction in parent space and `this.inv` the
+   * inverse of the parent's world rotation, both already set by `apply`.
+   *
+   * Falls through silently whenever the reference keypoints are untracked or
+   * too close together, leaving the swing-only rotation. That is the right
+   * failure: an unknown roll should stay at whatever the previous frame had
+   * rather than snap to a guess, and the hand keypoints are missing about a
+   * fifth of the time.
+   */
+  private applyRoll(s: Solved, pos: SignClipFrame["positions"]): void {
+    const a = pos[s.link.rollFrom!];
+    const b = pos[s.link.rollTo!];
+    if (!tracked(a) || !tracked(b)) return;
+
+    this.rollWant.set(
+      (b[0] - a[0]) * (this.mirrorX ? -1 : 1),
+      b[1] - a[1],
+      b[2] - a[2],
+    );
+    if (this.rollWant.lengthSq() < MIN_SEGMENT * MIN_SEGMENT) return;
+    if (this.calibrated) this.rollWant.applyMatrix4(this.basis);
+    this.rollWant.normalize().applyQuaternion(this.inv);
+
+    // Where the rest reference ends up once the swing is applied.
+    this.rollNow.copy(s.rollRef!).applyQuaternion(this.q);
+
+    // Only the component around the bone's axis is a roll; the rest is the
+    // swing that has already been solved.
+    this.rollNow.addScaledVector(this.dir, -this.rollNow.dot(this.dir));
+    this.rollWant.addScaledVector(this.dir, -this.rollWant.dot(this.dir));
+    if (this.rollNow.lengthSq() < 1e-6 || this.rollWant.lengthSq() < 1e-6) return;
+    this.rollNow.normalize();
+    this.rollWant.normalize();
+
+    const cos = Math.min(1, Math.max(-1, this.rollNow.dot(this.rollWant)));
+    this.rollCross.crossVectors(this.rollNow, this.rollWant);
+    let angle = this.rollCross.dot(this.dir) < 0 ? -Math.acos(cos) : Math.acos(cos);
+
+    // Resolve the two-branch ambiguity by continuity.
+    //
+    // A 2D source cannot tell a palm facing the camera from one facing away:
+    // the two project to mirror images, so the knuckle line's direction flips
+    // sign. Measured across 2,267 frames of the real dictionary, the angle
+    // between the palm axis and the knuckle line is plainly bimodal — one
+    // cluster near +110 degrees and another near -140, about half a turn
+    // apart. Solved literally, the wrist snaps 180 degrees whenever the
+    // projection crosses over, which is worse than the arbitrary-but-steady
+    // roll this replaces.
+    //
+    // Both branches fit the evidence equally well, so the one nearer to where
+    // the wrist already is wins. That cannot recover which way the palm truly
+    // faces — only 3D data can — but it makes the roll continuous and makes it
+    // track the hand's turning, instead of flickering between two readings.
+    const prev = s.rollPrev ?? 0;
+    const alt = angle > 0 ? angle - Math.PI : angle + Math.PI;
+    if (Math.abs(alt - prev) < Math.abs(angle - prev)) angle = alt;
+
+    // A wrist has a limited roll, and rolls at a finite speed.
+    const limit = (MAX_WRIST_ROLL * Math.PI) / 180;
+    angle = Math.min(limit, Math.max(-limit, angle));
+    if (this.rollStep > 0) {
+      const d = angle - prev;
+      if (Math.abs(d) > this.rollStep) angle = prev + Math.sign(d) * this.rollStep;
+    }
+    s.rollPrev = angle;
+
+    this.rollQ.setFromAxisAngle(this.dir, angle);
+    this.q.premultiply(this.rollQ);
+  }
+
+  /**
+   * Reduce a solved rotation to one the joint can physically make.
+   *
+   * Decomposes the swing about the measured flexion axis (a swing-twist split),
+   * keeps the flexion, and allows only as much off-axis rotation as that joint
+   * really has — none beyond the knuckle. The flexion itself is held between a
+   * little hyperextension and the anatomical limit.
+   *
+   * The result is that noise perpendicular to the hinge, which is most of it in
+   * a 2D source, stops reaching the pose at all rather than being bent into an
+   * impossible shape and then clipped.
+   */
+  private constrainJoint(s: Solved): void {
+    const limit = ((s.link.limit ?? 110) * Math.PI) / 180;
+    const floor = -(MAX_HYPEREXTENSION * Math.PI) / 180;
+    const h = s.hinge;
+
+    if (!h) {
+      // No measured hinge: fall back to limiting magnitude only.
+      const angle = 2 * Math.acos(Math.min(1, Math.abs(this.q.w)));
+      if (angle > limit) {
+        this.axis.set(this.q.x, this.q.y, this.q.z);
+        if (this.axis.lengthSq() > 1e-12) {
+          this.axis.normalize();
+          this.q.setFromAxisAngle(this.axis, this.q.w < 0 ? -limit : limit);
+        }
+      }
+      return;
+    }
+
+    // Swing-twist split: the part of `q` that turns about `h` is the flexion.
+    const proj = this.q.x * h.x + this.q.y * h.y + this.q.z * h.z;
+    this.twist.set(h.x * proj, h.y * proj, h.z * proj, this.q.w);
+    const len = Math.hypot(this.twist.x, this.twist.y, this.twist.z, this.twist.w);
+    if (len < 1e-12) this.twist.identity();
+    else this.twist.set(this.twist.x / len, this.twist.y / len, this.twist.z / len, this.twist.w / len);
+
+    // Signed flexion angle: the twist's vector part lies along h, so its
+    // component there is sin(angle/2) with the sign of the bend.
+    const sinHalf = this.twist.x * h.x + this.twist.y * h.y + this.twist.z * h.z;
+    const angle = 2 * Math.atan2(sinHalf, this.twist.w);
+    this.twist.setFromAxisAngle(h, Math.min(limit, Math.max(floor, angle)));
+
+    if (s.offAxis <= 0) {
+      this.q.copy(this.twist);
+      return;
+    }
+
+    // Whatever is left after the flexion is the sideways part. The knuckle
+    // keeps a limited amount of it so fingers can still spread.
+    this.swing.copy(this.q).multiply(this.scratch.copy(this.twist).invert());
+    const off = 2 * Math.acos(Math.min(1, Math.abs(this.swing.w)));
+    if (off > s.offAxis) {
+      this.axis.set(this.swing.x, this.swing.y, this.swing.z);
+      if (this.axis.lengthSq() > 1e-12) {
+        this.axis.normalize();
+        this.swing.setFromAxisAngle(this.axis, this.swing.w < 0 ? -s.offAxis : s.offAxis);
+      }
+    }
+    this.q.copy(this.swing).multiply(this.twist);
   }
 
   /**
@@ -460,6 +916,17 @@ export class Retargeter {
    * so "resting" is expressed in the same terms as every real sign.
    */
   reset(): void {
+    // Drop the direction filters: a new sign starts from the rest pose, and a
+    // filter carried over would ease every finger out of the previous sign's
+    // handshape instead of into this one's.
+    for (const s of this.solved) {
+      s.dirFilter = undefined;
+      s.rollPrev = undefined;
+    }
+    // Same reasoning for the speed limit's history: a new sign starts from
+    // rest, and limiting it against the previous sign's last pose would drag
+    // the first frames of every sign.
+    this.solved.forEach((s, i) => this.prev[i]?.copy(s.bind));
     for (const s of this.solved) s.bone.quaternion.copy(s.bind);
     this.apply(REST, 1);
   }

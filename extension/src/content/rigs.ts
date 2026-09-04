@@ -42,6 +42,40 @@ export interface BoneLink {
    * backwards through the palm. Clamping is anatomy, not taste.
    */
   limit?: number;
+  /**
+   * A second keypoint pair fixing this bone's ROLL about its own axis.
+   *
+   * A single direction cannot say how a bone is rolled — `setFromUnitVectors`
+   * returns the shortest arc, whose roll is whatever falls out of the
+   * arithmetic. For most bones that is the honest answer, because 2D data
+   * carries no twist.
+   *
+   * The hand is the exception, and it matters more than any other bone: palm
+   * orientation is PHONEMIC in sign language. The same handshape and the same
+   * location mean different things palm-up and palm-down, so a wrist rolled by
+   * accident is not a cosmetic fault, it changes the sign.
+   *
+   * The data is already there. The 21 hand keypoints give the plane of the
+   * hand, so the direction across the knuckles (index base to little base)
+   * fixes the roll that the wrist-to-middle-knuckle vector alone leaves free.
+   */
+  rollFrom?: number;
+  rollTo?: number;
+  /**
+   * Fraction of the solved rotation this bone takes, 0..1. Default 1 (all).
+   *
+   * A real neck is not one hinge. The cervical spine and the skull share a turn
+   * between them, which is why a person's head arrives at an angle rather than
+   * swinging to it like a lever. Driving `neck` alone put the whole rotation in
+   * one joint, and that is what read as mechanical.
+   *
+   * Giving the neck part of the turn lets the bone below solve the remainder
+   * naturally: each bone is solved against its parent's world rotation, so
+   * whatever the neck does not do is exactly what is left for the head. The
+   * motion is the same measured motion, distributed the way a neck distributes
+   * it — nothing is invented.
+   */
+  share?: number;
 }
 
 /**
@@ -65,6 +99,22 @@ export interface Landmarks {
   /** Subject's left and right shoulder, which together give handedness. */
   leftArm: string;
   rightArm: string;
+  /**
+   * Elbow and hand on the subject's left, used to measure how far this avatar
+   * can reach.
+   *
+   * Framing needs reach, not shoulder width. Signing space is bounded by how
+   * far a hand travels from the midline, which is half the shoulders plus the
+   * arm — and on stylised avatars those two are unrelated. Measured across the
+   * twelve shipped rigs, the width the clips actually need varies from 1.9 to
+   * 5.9 times the shoulder span (Ferk's shoulders are 0.11 wide against a 0.47
+   * arm), so no shoulder-based constant can frame them all. Against
+   * `shoulders/2 + arm` the same measurements land between 0.57 and 0.68.
+   *
+   * Optional: a rig that omits them falls back to a shoulder-span estimate.
+   */
+  leftElbow?: string;
+  leftHand?: string;
 }
 
 export interface Rig {
@@ -132,6 +182,58 @@ const rh = (n: number) => R_HAND + n;
 /** Anatomical ceiling for a finger joint, in degrees. */
 const FINGER_LIMIT = 110;
 
+/**
+ * Fraction of the measured head movement actually rendered. 0 = a fixed head.
+ *
+ * The head direction comes from the neck-to-nose vector, and in a 2D source
+ * that vector is mostly noise. Measured over 82 clips and 4,490 frames:
+ *
+ *     head tilt      p05 -10.6 deg, median 0.0, p95 +11.0, sd 7.4
+ *     per frame      mean 0.69 deg of change
+ *     REVERSALS      48.2% of frames change direction
+ *
+ * A real head movement — a nod, a headshake, a tilt held through a clause — is
+ * sustained. Reversing direction on half of all frames is the signature of
+ * tracker jitter, and rendered at full strength it read as a constant wobble
+ * that drew the eye away from the hands, which is where the meaning is.
+ *
+ * Stated honestly, because it is a real loss: head movement in sign language
+ * DOES carry grammar — headshake for negation, nod for affirmation, tilt for
+ * topics and conditionals. Two things make it unrecoverable here rather than
+ * merely noisy. A nod rotates toward and away from the camera, which a 2D
+ * source barely records at all; and what does survive is side-tilt, the least
+ * grammatically loaded component, buried in 48% reversal noise. Damping
+ * discards jitter, not meaning. Recovering the meaning needs 3D source data,
+ * not a larger share of this signal.
+ *
+ * Measured on the rendered skeleton with `node tools/rt/head.mjs`, across all
+ * 12 rigs: 0.8 to 1.1 degrees of standard deviation, which is 12-17% of the
+ * source's 6.4 — lower than 0.25 alone, because the playback smoothing damps
+ * what is left. Reversals fall from 48.2% to under 1% on most rigs.
+ *
+ * That is present enough that the avatar is not a mannequin and small enough to
+ * ignore while reading the hands. Set this to 0 for a completely fixed head.
+ */
+const HEAD_MOTION = 0.25;
+
+/**
+ * The neck/head split, preserved through the damping above.
+ *
+ * A real neck is not one hinge. The cervical spine and the skull share a turn
+ * between them, which is why a person's head arrives at an angle rather than
+ * swinging to it like a lever. The neck takes 55% of whatever movement is
+ * rendered and the skull resolves the remainder.
+ *
+ * `head` is solved against `neck`'s world rotation, so its share applies to
+ * what the neck did NOT do. Damping the neck alone would achieve nothing — the
+ * head would simply absorb the rest. These two solve to exactly HEAD_MOTION of
+ * the original turn:
+ *
+ *     NECK_SHARE + (1 - NECK_SHARE) * HEAD_SHARE  ===  HEAD_MOTION
+ */
+const NECK_SHARE = 0.55 * HEAD_MOTION;
+const HEAD_SHARE = (HEAD_MOTION - NECK_SHARE) / (1 - NECK_SHARE);
+
 const FINGERS = {
   thumb: [1, 2, 3, 4],
   index: [5, 6, 7, 8],
@@ -140,75 +242,7 @@ const FINGERS = {
   pinky: [17, 18, 19, 20],
 } as const;
 
-/**
- * MakeHuman's "Default"/"Default no toes" skeleton.
- *
- * Two quirks worth knowing, both confirmed by reading the exported rig rather
- * than assumed:
- *
- *   * The thumb hangs straight off `wrist`, while the other four fingers go
- *     through a `metacarpal`. So the chains are not uniform.
- *   * Arms are split into twist pairs (`upperarm01`/`upperarm02`). A clip has a
- *     single elbow point and cannot say how the forearm is twisted, so only the
- *     `01` bones are driven; the `02` bones stay at rest. Guessing twist from
- *     2D data produces a visibly broken forearm.
- */
-function makeHumanLinks(): BoneLink[] {
-  const links: BoneLink[] = [];
 
-  // Torso and head. Driving the neck keeps the head upright as the body moves.
-  links.push({ bone: "neck01", from: NECK, to: NOSE });
-
-  for (const side of ["L", "R"] as const) {
-    const shoulder = side === "L" ? L_SHOULDER : R_SHOULDER;
-    const elbow = side === "L" ? L_ELBOW : R_ELBOW;
-    const wrist = side === "L" ? L_WRIST : R_WRIST;
-    const hand = side === "L" ? lh : rh;
-
-    links.push(
-      { bone: `clavicle.${side}`, from: NECK, to: shoulder },
-      { bone: `upperarm01.${side}`, from: shoulder, to: elbow },
-      { bone: `lowerarm01.${side}`, from: elbow, to: wrist },
-      // Hand orientation comes from the middle finger's base: it is the most
-      // reliably tracked hand point and sits on the palm's axis.
-      { bone: `wrist.${side}`, from: wrist, to: hand(FINGERS.middle[0]) },
-    );
-
-    // Thumb: attaches directly to the wrist, no metacarpal.
-    const [t1, t2, t3, t4] = FINGERS.thumb;
-    links.push(
-      { bone: `finger1-1.${side}`, from: hand(t1), to: hand(t2), limit: FINGER_LIMIT },
-      { bone: `finger1-2.${side}`, from: hand(t2), to: hand(t3), limit: FINGER_LIMIT },
-      { bone: `finger1-3.${side}`, from: hand(t3), to: hand(t4), limit: FINGER_LIMIT },
-    );
-
-    // The other four: metacarpal first, then three phalanges. MakeHuman numbers
-    // fingers 2..5 for index..pinky, and metacarpals 1..4 for the same.
-    const rest = [FINGERS.index, FINGERS.middle, FINGERS.ring, FINGERS.pinky];
-    rest.forEach((chain, i) => {
-      const fingerNo = i + 2; // finger2 = index … finger5 = pinky
-      const metaNo = i + 1; // metacarpal1 = index … metacarpal4 = pinky
-      const [a, b, c, d] = chain;
-      links.push(
-        { bone: `metacarpal${metaNo}.${side}`, from: hand(0), to: hand(a) },
-        { bone: `finger${fingerNo}-1.${side}`, from: hand(a), to: hand(b), limit: FINGER_LIMIT },
-        { bone: `finger${fingerNo}-2.${side}`, from: hand(b), to: hand(c), limit: FINGER_LIMIT },
-        { bone: `finger${fingerNo}-3.${side}`, from: hand(c), to: hand(d), limit: FINGER_LIMIT },
-      );
-    });
-  }
-
-  return links;
-}
-
-/** MakeHuman landmark names, shared by all four shipped glTF rigs. */
-const MAKEHUMAN_LANDMARKS: Landmarks = {
-  hips: "spine05",
-  neck: "neck01",
-  head: "head",
-  leftArm: "upperarm01.L",
-  rightArm: "upperarm01.R",
-};
 
 /**
  * VRM 1.0's standard humanoid skeleton.
@@ -233,7 +267,10 @@ const MAKEHUMAN_LANDMARKS: Landmarks = {
 function vrmLinks(): BoneLink[] {
   const links: BoneLink[] = [];
 
-  links.push({ bone: "neck", from: NECK, to: NOSE });
+  links.push(
+    { bone: "neck", from: NECK, to: NOSE, share: NECK_SHARE },
+    { bone: "head", from: NECK, to: NOSE, share: HEAD_SHARE },
+  );
 
   for (const side of ["left", "right"] as const) {
     const S = side === "left" ? "left" : "right";
@@ -247,8 +284,15 @@ function vrmLinks(): BoneLink[] {
       { bone: `${S}UpperArm`, from: shoulder, to: elbow },
       { bone: `${S}LowerArm`, from: elbow, to: wrist },
       // As with MakeHuman: the middle finger's base is the most reliably
-      // tracked hand point and sits on the palm's axis.
-      { bone: `${S}Hand`, from: wrist, to: hand(FINGERS.middle[0]) },
+      // tracked hand point and sits on the palm's axis. `roll` adds the
+      // knuckle line, which is what fixes palm orientation — see BoneLink.roll.
+      {
+        bone: `${S}Hand`,
+        from: wrist,
+        to: hand(FINGERS.middle[0]),
+        rollFrom: hand(FINGERS.index[0]),
+        rollTo: hand(FINGERS.pinky[0]),
+      },
     );
 
     // Thumb — CMC, MCP, IP in OpenPose terms, which map onto VRM's
@@ -287,6 +331,8 @@ const VRM_LANDMARKS: Landmarks = {
   head: "head",
   leftArm: "leftUpperArm",
   rightArm: "rightUpperArm",
+  leftElbow: "leftLowerArm",
+  leftHand: "leftHand",
 };
 
 // The four MakeHuman rigs share the "Default simplified" skeleton — same 137
@@ -294,71 +340,130 @@ const VRM_LANDMARKS: Landmarks = {
 // elsewhere (Mixamo's `mixamorig:LeftHandIndex1`, say) needs its own links
 // function and nothing more; the retargeter and renderer are unchanged.
 //
-// Built from the FBX exports in `mms-out/` with the Blender converter, which
-// deduplicates the textures the FBX importer triples and downscales them to
-// what a 220x280 overlay can actually show. Each one is verified before it
-// lands here: 47/47 mapped bones resolve, the rest pose solves to 0.00 degrees,
-// and one-handed clips move only the dominant wrist.
+// All twelve shipped avatars are CC0 VRM models by Polygonal Mind, from their
+// 100 Avatars project. VRM is what makes this list pure data: the file declares
+// its own humanoid, so `vrmLinks()` drives every one of them and adding an
+// avatar needs no bone table at all.
+//
+// Verified by `node tools/rt/smooth.mjs` before landing: 40/40 mapped bones
+// resolve on each rig with none missing, no NaN or non-unit quaternions across
+// a full clip, and the playback smoothing removes ~90% of frame-to-frame jerk.
+//
+// (An earlier iteration built .glb rigs from MakeHuman FBX exports through
+// Blender. That pipeline is retired -- those rigs no longer ship.)
 //
 // `label` is what the settings picker shows. They are placeholders — naming a
 // signer is a decision for whoever owns the project, not the converter.
 export const RIGS: Rig[] = [
-  {
-    id: "m1",
-    label: "Signer 1",
-    file: "avatar-m1.glb",
-    format: "gltf",
-    links: makeHumanLinks(),
-    landmarks: MAKEHUMAN_LANDMARKS,
-    boneAxis: [0, 1, 0],
-  },
-  {
-    id: "m2",
-    label: "Signer 2",
-    file: "avatar-m2.glb",
-    format: "gltf",
-    links: makeHumanLinks(),
-    landmarks: MAKEHUMAN_LANDMARKS,
-    boneAxis: [0, 1, 0],
-  },
-  {
-    id: "f1",
-    label: "Signer 3",
-    file: "avatar-f1.glb",
-    format: "gltf",
-    links: makeHumanLinks(),
-    landmarks: MAKEHUMAN_LANDMARKS,
-    boneAxis: [0, 1, 0],
-  },
-  {
-    id: "f2",
-    label: "Signer 4",
-    file: "avatar-f2.glb",
-    format: "gltf",
-    links: makeHumanLinks(),
-    landmarks: MAKEHUMAN_LANDMARKS,
-    boneAxis: [0, 1, 0],
-  },
-  // Aurora, by Polygonal Mind — CC0, commercial use permitted, so it ships
-  // without the licence question hanging over the GPL-3.0 MMS-Player route the
-  // four rigs above came from.
+  // All rigs are VRM, all by Polygonal Mind, all CC0 with commercial use
+  // permitted — verified from each file's own VRM metadata, not assumed.
   //
-  // VRM 0.x, which three-vrm reads and normalises to the 1.0 humanoid, so
-  // nothing here has to care about the version. All 30 finger bones are mapped.
+  // Every one was checked before being listed here: it loads through
+  // VRMLoaderPlugin, exposes a humanoid, and resolves all 39 bones the map
+  // drives. They are VRM 0.x, which three-vrm normalises to the 1.0 humanoid,
+  // so nothing below has to care about the version.
   //
-  // Known gap: its 17 expressions are visemes and emotions, with no brow
-  // control, so ASL question marking is not reachable on this avatar. Non-manual
-  // markers need an avatar with brow blendshapes — a requirement for whatever
-  // ships, not for a first VRM.
+  // Deliberately no `boneAxis` on any of them — a VRM's bones do not share one
+  // local axis and must be measured from the bind pose. See the field's note.
+  //
+  // Known gap, unchanged from the first VRM: these expression sets are visemes
+  // and emotions with no brow control, so ASL question marking is not reachable
+  // on any of them. Non-manual markers need an avatar with brow blendshapes.
   {
     id: "vrm1",
-    label: "Signer 5 (VRM)",
+    label: "Aurora",
     file: "avatar-vrm1.vrm",
     format: "vrm",
     links: vrmLinks(),
     landmarks: VRM_LANDMARKS,
-    // Deliberately no boneAxis — see the note on the field. A VRM's bones do
-    // not share one local axis and must be measured.
+  },
+  {
+    id: "coolalien",
+    label: "Cool Alien",
+    file: "CoolAlien.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "coolbanana",
+    label: "Cool Banana",
+    file: "CoolBanana.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "crimsom",
+    label: "Crimsom",
+    file: "Crimsom.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "eggboy",
+    label: "Egg Boy",
+    file: "EggBOY.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "erika",
+    label: "Erika",
+    file: "Erika.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "ferk",
+    label: "Ferk",
+    file: "Ferk.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "horrornurse",
+    label: "Horror Nurse",
+    file: "HorrorNurse.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "jennifer",
+    label: "Jennifer",
+    file: "Jennifer.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "pumpkin",
+    label: "Pumpkin",
+    file: "Pumpkin.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "skull",
+    label: "Skull",
+    file: "Skull.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
+  },
+  {
+    id: "zombie",
+    label: "Zombie",
+    file: "Zombie.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS,
   },
 ];
 

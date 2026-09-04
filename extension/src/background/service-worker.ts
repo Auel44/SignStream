@@ -19,6 +19,7 @@ import {
   type ExtensionSettings,
 } from "../shared/types";
 import { resolveWsEndpoint } from "../shared/config";
+import { captureActiveFor } from "../shared/capture";
 import { RIGS } from "../content/rigs";
 
 /**
@@ -95,6 +96,20 @@ async function setCaptureState(patch: Partial<CaptureState>): Promise<CaptureSta
 const ready = loadCaptureState();
 
 /**
+ * Tabs we have already tried to re-inject, so a permanently unreachable page
+ * (chrome://, the Web Store, a PDF viewer) cannot turn every relayed message
+ * into an injection attempt. Cleared whenever the tab becomes reachable again.
+ */
+const reinjected = new Set<number>();
+
+/** Message types already reported as undeliverable, so the log stays readable. */
+const warnedNoTab = new Set<string>();
+
+/** Clip requests seen, and whether one has ever succeeded. Diagnostics only. */
+let clipFetches = 0;
+let clipFetchOkLogged = false;
+
+/**
  * Send a message to the captured tab's content script (best-effort).
  *
  * Awaits `ready` before reading the tab id. The worker is restarted constantly
@@ -104,27 +119,107 @@ const ready = loadCaptureState();
  * dropped, so sign ids never reached the content script and no clip was ever
  * fetched. Awaiting costs nothing once the state is already loaded.
  */
-function relayToContent(message: ExtensionMessage): void {
+function relayToContent(message: ExtensionMessage, knownTabId?: number): void {
+  // Read the tab id NOW, synchronously, not inside the promise below.
+  //
+  // `setCaptureState` assigns `cached` before its first await, so it takes
+  // effect immediately, while this callback runs a microtask later. `stopCapture`
+  // broadcasts the "capture stopped" message and then clears the tab id in the
+  // very next statement — so by the time the callback ran, `cached.tabId` was
+  // already null and the message was dropped.
+  //
+  // That single dropped message is what produced a pipeline that looked alive
+  // and did nothing: the content script never heard "stopped", so it left the
+  // overlay mounted and its caption feed running (MAP_TEXT kept reaching the
+  // backend, and sign ids kept being produced), while every reply — every
+  // TRANSCRIPT and every SIGN_ID — was discarded here for want of a tab id.
+  // No captions under the avatar, no clip ever fetched, no limb ever moved.
+  const idNow = knownTabId ?? cached.tabId;
   void ready.then(() => {
-    if (cached.tabId === null) return;
+    // `idNow` is null only on a cold worker, where `cached` is still defaults
+    // and the rehydrated value is the correct one.
+    const tabId = idNow ?? cached.tabId;
+    if (tabId === null) {
+      // Say so. A bare `return` here is what let a dropped relay masquerade as
+      // a working pipeline for weeks: the backend kept logging transcripts and
+      // sign ids while nothing reached the page. One line per message type is
+      // enough to make it obvious in the service worker console.
+      if (!warnedNoTab.has(message.type)) {
+        warnedNoTab.add(message.type);
+        console.warn(
+          `[SignStream] ${message.type} could not be delivered: no captured tab. ` +
+            "Reconnect audio from the popup.",
+        );
+      }
+      pipeline.contentReachable = false;
+      return;
+    }
+    warnedNoTab.clear();
     chrome.tabs
-      .sendMessage(cached.tabId, message)
+      .sendMessage(tabId, message)
       .then(() => {
         pipeline.contentReachable = true;
+        reinjected.delete(tabId);
+        setActionBadge("");
       })
       .catch(() => {
-        // No content script listening on the captured tab. Recording it rather
-        // than ignoring it, because this is the state in which the pipeline
-        // looks perfect end to end — audio captured, words transcribed, sign
-        // ids emitted — while nothing reaches the page and the avatar never
-        // appears. Silently swallowing it is what made that indistinguishable
-        // from a broken rig or a missing clip.
+        // No content script listening on the captured tab. This is the state in
+        // which the pipeline looks perfect end to end — audio captured, words
+        // transcribed, sign ids emitted — while nothing reaches the page and the
+        // avatar never appears.
         //
-        // Usually means the page was loaded before the extension (or before it
-        // was reloaded), so no content script was ever injected into it.
+        // It is also the ONLY thing that had gone wrong in three weeks of
+        // "the avatar is not signing": stages 1-3 kept logging, and the two
+        // stages that run inside the content script (the caption feed and the
+        // clip fetch) had simply stopped.
+        //
+        // The usual cause is reloading the extension, which orphans the content
+        // script in every page that was already open while capture carries on
+        // from the service worker. Recover rather than report: re-inject once,
+        // and only fall back to telling the user if that fails too.
         pipeline.contentReachable = false;
+        if (!reinjected.has(tabId)) {
+          reinjected.add(tabId);
+          void reinjectContentScript(tabId);
+        }
       });
   });
+}
+
+/**
+ * Put a fresh content script into a tab whose own one is gone.
+ *
+ * Declared content scripts are injected at page load, so a tab that was open
+ * before the extension was (re)loaded never gets one until it is reloaded by
+ * hand — which is a poor thing to require of a user who can see the transcript
+ * working. `chrome.scripting` fixes it without touching the page.
+ */
+async function reinjectContentScript(tabId: number): Promise<void> {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["src/content/content.js"],
+    });
+    console.debug(`[SignStream] re-injected the content script into tab ${tabId}`);
+    // Re-assert capture state so the fresh script mounts the overlay; it missed
+    // the broadcast that was sent while it did not exist.
+    void chrome.tabs
+      .sendMessage(tabId, { type: "CAPTURE_STATE", active: cached.active } satisfies ExtensionMessage)
+      .catch(() => {});
+  } catch (err) {
+    // Pages the extension may not script: chrome://, the Web Store, a PDF
+    // viewer, or a host the user has not granted. Nothing can be done for those
+    // beyond saying so, so the badge stops the failure being silent.
+    console.warn(
+      `[SignStream] could not inject into tab ${tabId} — the avatar cannot appear ` +
+        "on this page. Reload it, or capture a normal web page.",
+      err,
+    );
+    setActionBadge("!");
+    void chrome.action.setTitle({
+      title: "SignStream: the interpreter could not be placed on this page. Reload the page.",
+    });
+  }
 }
 
 /**
@@ -238,14 +333,19 @@ async function waitForOffscreen(): Promise<void> {
 
 // ── Capture orchestration ────────────────────────────────────────────────────────
 
-function broadcastCaptureState(active: boolean, error?: string): void {
+function broadcastCaptureState(
+  active: boolean,
+  error?: string,
+  /** Tab to relay to, for callers that are about to clear the stored one. */
+  knownTabId?: number,
+): void {
   void setCaptureState({ active });
   const message = { type: "CAPTURE_STATE", active, error } satisfies ExtensionMessage;
   // The popup may be closed and the offscreen document may not exist yet;
   // either makes this reject with "receiving end does not exist". Harmless,
   // but it must be caught or it surfaces as an unhandled rejection every time.
   chrome.runtime.sendMessage(message).catch(() => {});
-  relayToContent(message); // content overlay (show/hide)
+  relayToContent(message, knownTabId); // content overlay (show/hide)
 }
 
 async function startCapture(tabId: number): Promise<void> {
@@ -292,10 +392,13 @@ async function startCapture(tabId: number): Promise<void> {
 }
 
 function stopCapture(): void {
+  // Grab the tab BEFORE the state is cleared: it is the only way the hide can
+  // still be addressed once `tabId` is gone.
+  const tabId = cached.tabId ?? undefined;
   chrome.runtime
     .sendMessage({ type: "OFFSCREEN_STOP" } satisfies ExtensionMessage)
     .catch(() => {}); // no offscreen document — nothing to stop
-  broadcastCaptureState(false); // relays hide to the content overlay
+  broadcastCaptureState(false, undefined, tabId); // relays hide to the content overlay
   void setCaptureState({ tabId: null, pendingTabId: null });
   setActionBadge("");
 }
@@ -414,9 +517,12 @@ chrome.runtime.onMessage.addListener(
         return true;
 
       case "GET_CAPTURE_STATE":
+        // Narrowed to the asking tab — see captureActiveFor. A content script
+        // that hears "active" mounts the avatar, so answering globally showed
+        // the interpreter on every page opened beside the one being captured.
         sendResponse({
           type: "CAPTURE_STATE",
-          active: cached.active,
+          active: captureActiveFor(cached, _sender.tab?.id),
         } satisfies ExtensionMessage);
         // Opening the popup means the user clicked the toolbar icon, which
         // grants activeTab — the gesture Chrome wanted before it would let us
@@ -478,6 +584,38 @@ chrome.runtime.onMessage.addListener(
         // a reconnect (and a cold ASR container) on every pause. Capture ends
         // when the user stops it or the tab goes away.
         return false;
+
+      case "FETCH_CLIP": {
+        // Runs here rather than in the content script — see the note on the
+        // message type. Errors are reported as status 0 so the caller can tell
+        // "the server said no" (a real 404, worth caching) from "the request
+        // never happened" (transient, must not be cached).
+        clipFetches += 1;
+        fetch(message.url)
+          .then(async (res) => {
+            const body = res.ok ? await res.json().catch(() => null) : null;
+            if (!clipFetchOkLogged && res.ok) {
+              clipFetchOkLogged = true;
+              console.info(`[SignStream] clip fetch working — first: ${message.url}`);
+            }
+            if (!res.ok) {
+              console.warn(`[SignStream] clip fetch ${res.status} for ${message.url}`);
+            }
+            sendResponse({ type: "CLIP_DATA", status: res.status, body } satisfies ExtensionMessage);
+          })
+          .catch((err) => {
+            // Loud, not debug. A clip that never arrives is an avatar that
+            // never signs, and this is the exact failure that hid behind a
+            // console.debug while the whole pipeline looked healthy.
+            console.warn(
+              `[SignStream] clip fetch FAILED for ${message.url} — ${String(err)}. ` +
+                "If this says the loopback address space was denied, the service " +
+                "worker is still being refused local network access.",
+            );
+            sendResponse({ type: "CLIP_DATA", status: 0, body: null } satisfies ExtensionMessage);
+          });
+        return true;
+      }
 
       case "GET_DIAGNOSTICS": {
         // Ask the captured tab for the avatar half, then answer with both.

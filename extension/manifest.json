@@ -7,7 +7,8 @@
     "storage",
     "activeTab",
     "tabCapture",
-    "offscreen"
+    "offscreen",
+    "scripting"
   ],
   "action": {
     "default_title": "SignStream",
@@ -31,16 +32,27 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "avatar-m1.glb",
-        "avatar-m2.glb",
-        "avatar-f1.glb",
-        "avatar-f2.glb",
         "avatar-vrm1.vrm",
+        "CoolAlien.vrm",
+        "CoolBanana.vrm",
+        "Crimsom.vrm",
+        "EggBOY.vrm",
+        "Erika.vrm",
+        "Ferk.vrm",
+        "HorrorNurse.vrm",
+        "Jennifer.vrm",
+        "Pumpkin.vrm",
+        "Skull.vrm",
+        "Zombie.vrm",
         "src/offscreen/pcm-worklet.js"
       ],
       "matches": [
         "<all_urls>"
       ]
     }
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ]
 }

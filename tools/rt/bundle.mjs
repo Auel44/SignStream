@@ -4,7 +4,7 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
-// node_modules/three/build/three.module.js
+// extension/node_modules/three/build/three.module.js
 var three_module_exports = {};
 __export(three_module_exports, {
   ACESFilmicToneMapping: () => ACESFilmicToneMapping,
@@ -2636,10 +2636,10 @@ var Quaternion = class {
   angleTo(q) {
     return 2 * Math.acos(Math.abs(clamp(this.dot(q), -1, 1)));
   }
-  rotateTowards(q, step) {
+  rotateTowards(q, step2) {
     const angle = this.angleTo(q);
     if (angle === 0) return this;
-    const t = Math.min(1, step / angle);
+    const t = Math.min(1, step2 / angle);
     this.slerp(q, t);
     return this;
   }
@@ -4479,14 +4479,14 @@ var Matrix4 = class _Matrix4 {
     );
     return this;
   }
-  compose(position, quaternion, scale) {
+  compose(position, quaternion, scale2) {
     const te = this.elements;
     const x = quaternion._x, y = quaternion._y, z = quaternion._z, w = quaternion._w;
     const x2 = x + x, y2 = y + y, z2 = z + z;
     const xx = x * x2, xy = x * y2, xz = x * z2;
     const yy = y * y2, yz = y * z2, zz = z * z2;
     const wx = w * x2, wy = w * y2, wz = w * z2;
-    const sx = scale.x, sy = scale.y, sz = scale.z;
+    const sx = scale2.x, sy = scale2.y, sz = scale2.z;
     te[0] = (1 - (yy + zz)) * sx;
     te[1] = (xy + wz) * sx;
     te[2] = (xz - wy) * sx;
@@ -4505,7 +4505,7 @@ var Matrix4 = class _Matrix4 {
     te[15] = 1;
     return this;
   }
-  decompose(position, quaternion, scale) {
+  decompose(position, quaternion, scale2) {
     const te = this.elements;
     let sx = _v1$5.set(te[0], te[1], te[2]).length();
     const sy = _v1$5.set(te[4], te[5], te[6]).length();
@@ -4529,9 +4529,9 @@ var Matrix4 = class _Matrix4 {
     _m1$4.elements[9] *= invSZ;
     _m1$4.elements[10] *= invSZ;
     quaternion.setFromRotationMatrix(_m1$4);
-    scale.x = sx;
-    scale.y = sy;
-    scale.z = sz;
+    scale2.x = sx;
+    scale2.y = sy;
+    scale2.z = sz;
     return this;
   }
   makePerspective(left, right, top, bottom, near, far, coordinateSystem = WebGLCoordinateSystem) {
@@ -4876,7 +4876,7 @@ var Object3D = class _Object3D extends EventDispatcher {
     const position = new Vector3();
     const rotation = new Euler();
     const quaternion = new Quaternion();
-    const scale = new Vector3(1, 1, 1);
+    const scale2 = new Vector3(1, 1, 1);
     function onRotationChange() {
       quaternion.setFromEuler(rotation, false);
     }
@@ -4904,7 +4904,7 @@ var Object3D = class _Object3D extends EventDispatcher {
       scale: {
         configurable: true,
         enumerable: true,
-        value: scale
+        value: scale2
       },
       modelViewMatrix: {
         value: new Matrix4()
@@ -15011,15 +15011,15 @@ function WebGLTextures(_gl, extensions, state, properties, capabilities, utils, 
     ) : createElementNS("canvas");
   }
   function resizeImage(image, needsNewCanvas, maxSize) {
-    let scale = 1;
+    let scale2 = 1;
     const dimensions = getDimensions(image);
     if (dimensions.width > maxSize || dimensions.height > maxSize) {
-      scale = maxSize / Math.max(dimensions.width, dimensions.height);
+      scale2 = maxSize / Math.max(dimensions.width, dimensions.height);
     }
-    if (scale < 1) {
+    if (scale2 < 1) {
       if (typeof HTMLImageElement !== "undefined" && image instanceof HTMLImageElement || typeof HTMLCanvasElement !== "undefined" && image instanceof HTMLCanvasElement || typeof ImageBitmap !== "undefined" && image instanceof ImageBitmap || typeof VideoFrame !== "undefined" && image instanceof VideoFrame) {
-        const width = Math.floor(scale * dimensions.width);
-        const height = Math.floor(scale * dimensions.height);
+        const width = Math.floor(scale2 * dimensions.width);
+        const height = Math.floor(scale2 * dimensions.height);
         if (_canvas2 === void 0) _canvas2 = createCanvas(width, height);
         const canvas = needsNewCanvas ? createCanvas(width, height) : _canvas2;
         canvas.width = width;
@@ -19439,8 +19439,8 @@ var Sprite = class extends Object3D {
     return this;
   }
 };
-function transformVertex(vertexPosition, mvPosition, center, scale, sin, cos) {
-  _alignedPosition.subVectors(vertexPosition, center).addScalar(0.5).multiply(scale);
+function transformVertex(vertexPosition, mvPosition, center, scale2, sin, cos) {
+  _alignedPosition.subVectors(vertexPosition, center).addScalar(0.5).multiply(scale2);
   if (sin !== void 0) {
     _rotatedPosition.x = cos * _alignedPosition.x - sin * _alignedPosition.y;
     _rotatedPosition.y = sin * _alignedPosition.x + cos * _alignedPosition.y;
@@ -19666,9 +19666,9 @@ var SkinnedMesh = class extends Mesh {
     const skinWeight = this.geometry.attributes.skinWeight;
     for (let i = 0, l = skinWeight.count; i < l; i++) {
       vector.fromBufferAttribute(skinWeight, i);
-      const scale = 1 / vector.manhattanLength();
-      if (scale !== Infinity) {
-        vector.multiplyScalar(scale);
+      const scale2 = 1 / vector.manhattanLength();
+      if (scale2 !== Infinity) {
+        vector.multiplyScalar(scale2);
       } else {
         vector.set(1, 0, 0, 0);
       }
@@ -20751,14 +20751,14 @@ var Line = class extends Object3D {
     _ray$1.copy(raycaster.ray).applyMatrix4(_inverseMatrix$1);
     const localThreshold = threshold / ((this.scale.x + this.scale.y + this.scale.z) / 3);
     const localThresholdSq = localThreshold * localThreshold;
-    const step = this.isLineSegments ? 2 : 1;
+    const step2 = this.isLineSegments ? 2 : 1;
     const index = geometry.index;
     const attributes = geometry.attributes;
     const positionAttribute = attributes.position;
     if (index !== null) {
       const start = Math.max(0, drawRange.start);
       const end = Math.min(index.count, drawRange.start + drawRange.count);
-      for (let i = start, l = end - 1; i < l; i += step) {
+      for (let i = start, l = end - 1; i < l; i += step2) {
         const a = index.getX(i);
         const b = index.getX(i + 1);
         const intersect2 = checkIntersection(this, raycaster, _ray$1, localThresholdSq, a, b);
@@ -20777,7 +20777,7 @@ var Line = class extends Object3D {
     } else {
       const start = Math.max(0, drawRange.start);
       const end = Math.min(positionAttribute.count, drawRange.start + drawRange.count);
-      for (let i = start, l = end - 1; i < l; i += step) {
+      for (let i = start, l = end - 1; i < l; i += step2) {
         const intersect2 = checkIntersection(this, raycaster, _ray$1, localThresholdSq, i, i + 1);
         if (intersect2) {
           intersects2.push(intersect2);
@@ -30628,10 +30628,10 @@ var GridHelper = class extends LineSegments {
     color1 = new Color(color1);
     color2 = new Color(color2);
     const center = divisions / 2;
-    const step = size / divisions;
+    const step2 = size / divisions;
     const halfSize = size / 2;
     const vertices = [], colors = [];
-    for (let i = 0, j = 0, k = -halfSize; i <= divisions; i++, k += step) {
+    for (let i = 0, j = 0, k = -halfSize; i <= divisions; i++, k += step2) {
       vertices.push(-halfSize, 0, k, halfSize, 0, k);
       vertices.push(k, 0, -halfSize, k, 0, halfSize);
       const color = i === center ? color1 : color2;
@@ -30828,7 +30828,7 @@ var CameraHelper = class extends LineSegments {
     const colorCross = new Color(3355443);
     this.setColors(colorFrustum, colorCone, colorUp, colorTarget, colorCross);
   }
-  setColors(frustum, cone, up, target, cross) {
+  setColors(frustum, cone, up, target, cross2) {
     const geometry = this.geometry;
     const colorAttribute = geometry.getAttribute("color");
     colorAttribute.setXYZ(0, frustum.r, frustum.g, frustum.b);
@@ -30871,16 +30871,16 @@ var CameraHelper = class extends LineSegments {
     colorAttribute.setXYZ(37, up.r, up.g, up.b);
     colorAttribute.setXYZ(38, target.r, target.g, target.b);
     colorAttribute.setXYZ(39, target.r, target.g, target.b);
-    colorAttribute.setXYZ(40, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(41, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(42, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(43, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(44, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(45, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(46, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(47, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(48, cross.r, cross.g, cross.b);
-    colorAttribute.setXYZ(49, cross.r, cross.g, cross.b);
+    colorAttribute.setXYZ(40, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(41, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(42, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(43, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(44, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(45, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(46, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(47, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(48, cross2.r, cross2.g, cross2.b);
+    colorAttribute.setXYZ(49, cross2.r, cross2.g, cross2.b);
     colorAttribute.needsUpdate = true;
   }
   update() {
@@ -31373,7 +31373,7 @@ if (typeof window !== "undefined") {
   }
 }
 
-// src/content/rigs.ts
+// extension/src/content/rigs.ts
 var NOSE = 0;
 var NECK = 1;
 var R_SHOULDER = 2;
@@ -31387,6 +31387,9 @@ var R_HAND = 46;
 var lh = (n) => L_HAND + n;
 var rh = (n) => R_HAND + n;
 var FINGER_LIMIT = 110;
+var HEAD_MOTION = 0.25;
+var NECK_SHARE = 0.55 * HEAD_MOTION;
+var HEAD_SHARE = (HEAD_MOTION - NECK_SHARE) / (1 - NECK_SHARE);
 var FINGERS = {
   thumb: [1, 2, 3, 4],
   index: [5, 6, 7, 8],
@@ -31394,86 +31397,237 @@ var FINGERS = {
   ring: [13, 14, 15, 16],
   pinky: [17, 18, 19, 20]
 };
-function makeHumanLinks() {
+function vrmLinks() {
   const links = [];
-  links.push({ bone: "neck01", from: NECK, to: NOSE });
-  for (const side of ["L", "R"]) {
-    const shoulder = side === "L" ? L_SHOULDER : R_SHOULDER;
-    const elbow = side === "L" ? L_ELBOW : R_ELBOW;
-    const wrist = side === "L" ? L_WRIST : R_WRIST;
-    const hand = side === "L" ? lh : rh;
+  links.push(
+    { bone: "neck", from: NECK, to: NOSE, share: NECK_SHARE },
+    { bone: "head", from: NECK, to: NOSE, share: HEAD_SHARE }
+  );
+  for (const side of ["left", "right"]) {
+    const S = side === "left" ? "left" : "right";
+    const shoulder = side === "left" ? L_SHOULDER : R_SHOULDER;
+    const elbow = side === "left" ? L_ELBOW : R_ELBOW;
+    const wrist = side === "left" ? L_WRIST : R_WRIST;
+    const hand = side === "left" ? lh : rh;
     links.push(
-      { bone: `clavicle.${side}`, from: NECK, to: shoulder },
-      { bone: `upperarm01.${side}`, from: shoulder, to: elbow },
-      { bone: `lowerarm01.${side}`, from: elbow, to: wrist },
-      // Hand orientation comes from the middle finger's base: it is the most
-      // reliably tracked hand point and sits on the palm's axis.
-      { bone: `wrist.${side}`, from: wrist, to: hand(FINGERS.middle[0]) }
+      { bone: `${S}Shoulder`, from: NECK, to: shoulder },
+      { bone: `${S}UpperArm`, from: shoulder, to: elbow },
+      { bone: `${S}LowerArm`, from: elbow, to: wrist },
+      // As with MakeHuman: the middle finger's base is the most reliably
+      // tracked hand point and sits on the palm's axis. `roll` adds the
+      // knuckle line, which is what fixes palm orientation — see BoneLink.roll.
+      {
+        bone: `${S}Hand`,
+        from: wrist,
+        to: hand(FINGERS.middle[0]),
+        rollFrom: hand(FINGERS.index[0]),
+        rollTo: hand(FINGERS.pinky[0])
+      }
     );
     const [t1, t2, t3, t4] = FINGERS.thumb;
     links.push(
-      { bone: `finger1-1.${side}`, from: hand(t1), to: hand(t2), limit: FINGER_LIMIT },
-      { bone: `finger1-2.${side}`, from: hand(t2), to: hand(t3), limit: FINGER_LIMIT },
-      { bone: `finger1-3.${side}`, from: hand(t3), to: hand(t4), limit: FINGER_LIMIT }
+      { bone: `${S}ThumbMetacarpal`, from: hand(t1), to: hand(t2), limit: FINGER_LIMIT },
+      { bone: `${S}ThumbProximal`, from: hand(t2), to: hand(t3), limit: FINGER_LIMIT },
+      { bone: `${S}ThumbDistal`, from: hand(t3), to: hand(t4), limit: FINGER_LIMIT }
     );
-    const rest = [FINGERS.index, FINGERS.middle, FINGERS.ring, FINGERS.pinky];
-    rest.forEach((chain, i) => {
-      const fingerNo = i + 2;
-      const metaNo = i + 1;
+    const others = [
+      ["Index", FINGERS.index],
+      ["Middle", FINGERS.middle],
+      ["Ring", FINGERS.ring],
+      ["Little", FINGERS.pinky]
+      // VRM calls the pinky "Little"
+    ];
+    for (const [digit, chain] of others) {
       const [a, b, c, d] = chain;
       links.push(
-        { bone: `metacarpal${metaNo}.${side}`, from: hand(0), to: hand(a) },
-        { bone: `finger${fingerNo}-1.${side}`, from: hand(a), to: hand(b), limit: FINGER_LIMIT },
-        { bone: `finger${fingerNo}-2.${side}`, from: hand(b), to: hand(c), limit: FINGER_LIMIT },
-        { bone: `finger${fingerNo}-3.${side}`, from: hand(c), to: hand(d), limit: FINGER_LIMIT }
+        { bone: `${S}${digit}Proximal`, from: hand(a), to: hand(b), limit: FINGER_LIMIT },
+        { bone: `${S}${digit}Intermediate`, from: hand(b), to: hand(c), limit: FINGER_LIMIT },
+        { bone: `${S}${digit}Distal`, from: hand(c), to: hand(d), limit: FINGER_LIMIT }
       );
-    });
+    }
   }
   return links;
 }
+var VRM_LANDMARKS = {
+  hips: "hips",
+  neck: "neck",
+  head: "head",
+  leftArm: "leftUpperArm",
+  rightArm: "rightUpperArm",
+  leftElbow: "leftLowerArm",
+  leftHand: "leftHand"
+};
 var RIGS = [
+  // All rigs are VRM, all by Polygonal Mind, all CC0 with commercial use
+  // permitted — verified from each file's own VRM metadata, not assumed.
+  //
+  // Every one was checked before being listed here: it loads through
+  // VRMLoaderPlugin, exposes a humanoid, and resolves all 39 bones the map
+  // drives. They are VRM 0.x, which three-vrm normalises to the 1.0 humanoid,
+  // so nothing below has to care about the version.
+  //
+  // Deliberately no `boneAxis` on any of them — a VRM's bones do not share one
+  // local axis and must be measured from the bind pose. See the field's note.
+  //
+  // Known gap, unchanged from the first VRM: these expression sets are visemes
+  // and emotions with no brow control, so ASL question marking is not reachable
+  // on any of them. Non-manual markers need an avatar with brow blendshapes.
   {
-    id: "makehuman",
-    label: "Default signer",
-    file: "avatar.glb",
-    links: makeHumanLinks()
+    id: "vrm1",
+    label: "Aurora",
+    file: "avatar-vrm1.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
   },
   {
-    id: "man1",
-    label: "Kofi",
-    file: "avatar-man.glb",
-    links: makeHumanLinks()
+    id: "coolalien",
+    label: "Cool Alien",
+    file: "CoolAlien.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
   },
   {
-    id: "woman1",
-    label: "Ama",
-    file: "avatar-woman.glb",
-    links: makeHumanLinks()
+    id: "coolbanana",
+    label: "Cool Banana",
+    file: "CoolBanana.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "crimsom",
+    label: "Crimsom",
+    file: "Crimsom.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "eggboy",
+    label: "Egg Boy",
+    file: "EggBOY.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "erika",
+    label: "Erika",
+    file: "Erika.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "ferk",
+    label: "Ferk",
+    file: "Ferk.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "horrornurse",
+    label: "Horror Nurse",
+    file: "HorrorNurse.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "jennifer",
+    label: "Jennifer",
+    file: "Jennifer.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "pumpkin",
+    label: "Pumpkin",
+    file: "Pumpkin.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "skull",
+    label: "Skull",
+    file: "Skull.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
+  },
+  {
+    id: "zombie",
+    label: "Zombie",
+    file: "Zombie.vrm",
+    format: "vrm",
+    links: vrmLinks(),
+    landmarks: VRM_LANDMARKS
   }
 ];
+var sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+var scale = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+var dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+var cross = (a, b) => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0]
+];
+var norm = (a) => {
+  const l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+var step = (a, b, k) => [
+  a[0] + b[0] * k,
+  a[1] + b[1] * k,
+  a[2] + b[2] * k
+];
+var lean = (a, b, deg) => {
+  const r = deg * Math.PI / 180;
+  return norm(step(scale(a, Math.cos(r)), b, Math.sin(r)));
+};
+var REST_CURL = [15, 45, 65];
+var PALM = 0.075;
+var PHALANX = [0.034, 0.024, 0.018];
+var THUMB_SEG = [0.032, 0.024, 0.02];
 function restFrame() {
   const p = Array.from({ length: 67 }, () => [0, 0, 0]);
-  const set = (i, x, y) => p[i] = [x, y, 0];
-  set(NOSE, 0, 0.2);
-  set(NECK, 0, 0);
-  set(R_SHOULDER, -0.2, -0.02);
-  set(L_SHOULDER, 0.2, -0.02);
-  set(R_ELBOW, -0.24, -0.32);
-  set(L_ELBOW, 0.24, -0.32);
-  set(R_WRIST, -0.27, -0.6);
-  set(L_WRIST, 0.27, -0.6);
+  p[NOSE] = [0, 0.2, 0];
+  p[NECK] = [0, 0, 0];
   for (const side of ["L", "R"]) {
+    const sx = side === "L" ? 1 : -1;
     const base = side === "L" ? L_HAND : R_HAND;
-    const sx = side === "L" ? 0.27 : -0.27;
-    const sy = -0.6;
-    set(base, sx, sy);
-    const spread = [-0.035, -0.012, 4e-3, 0.018, 0.032];
-    const chains = [FINGERS.thumb, FINGERS.index, FINGERS.middle, FINGERS.ring, FINGERS.pinky];
+    const shoulder = [0.2 * sx, -0.02, 0];
+    const elbow = [0.225 * sx, -0.3, 0.02];
+    const wrist = [0.13 * sx, -0.38, 0.21];
+    p[side === "L" ? L_SHOULDER : R_SHOULDER] = shoulder;
+    p[side === "L" ? L_ELBOW : R_ELBOW] = elbow;
+    p[side === "L" ? L_WRIST : R_WRIST] = wrist;
+    p[base] = wrist;
+    const forearm = norm(sub(wrist, elbow));
+    const inwards = norm([-0.35 * sx, 0, -0.94]);
+    const curl = norm(step(inwards, forearm, -dot(inwards, forearm)));
+    const across = scale(norm(cross(forearm, curl)), sx);
+    const spread = [-0.021, -7e-3, 7e-3, 0.021];
+    const chains = [FINGERS.index, FINGERS.middle, FINGERS.ring, FINGERS.pinky];
     chains.forEach((chain, f) => {
-      const dx = (side === "L" ? 1 : -1) * spread[f];
-      chain.forEach((pt, seg) => {
-        set(base + pt, sx + dx, sy - 0.03 - seg * 0.022);
-      });
+      let pt = step(step(wrist, forearm, PALM), across, spread[f]);
+      p[base + chain[0]] = pt;
+      for (let seg = 0; seg < 3; seg++) {
+        pt = step(pt, lean(forearm, curl, REST_CURL[seg]), PHALANX[seg]);
+        p[base + chain[seg + 1]] = pt;
+      }
+    });
+    const thumbDir = norm(step(step(scale(forearm, 0.86), curl, -0.28), across, -0.36));
+    let tp = step(step(step(wrist, forearm, 0.025), curl, -0.03), across, -0.03);
+    p[base + FINGERS.thumb[0]] = tp;
+    FINGERS.thumb.slice(1).forEach((idx, seg) => {
+      tp = step(tp, lean(thumbDir, curl, seg * 9), THUMB_SEG[seg]);
+      p[base + idx] = tp;
     });
   }
   return { t: 0, positions: p };
@@ -31481,10 +31635,19 @@ function restFrame() {
 function rigById(id) {
   return RIGS.find((r) => r.id === id) ?? RIGS[0];
 }
+function boneKey(name) {
+  return name.replace(/[._\s]/g, "").toLowerCase();
+}
 
-// src/content/retarget.ts
-var BONE_AXIS = new Vector3(0, 1, 0);
+// extension/src/content/retarget.ts
+var DEFAULT_BONE_AXIS = new Vector3(0, 1, 0);
 var MIN_SEGMENT = 0.012;
+var MAX_HYPEREXTENSION = 8;
+var KNUCKLE_OFF_AXIS = 40;
+var MAX_FINGER_DEG_PER_S = 300;
+var MAX_WRIST_ROLL = 100;
+var MAX_BONE_DEG_PER_S = 900;
+var MAX_ROLL_DEG_PER_S = 360;
 var REST = restFrame();
 function tracked(p) {
   return !!p && (p[0] !== 0 || p[1] !== 0);
@@ -31494,13 +31657,29 @@ var Retargeter = class {
    * @param mirrorX Flip left/right. A camera sees a signer mirrored, so whether
    *   the clip's "left wrist" is the rig's left depends on how the source was
    *   recorded. Exposed rather than assumed.
+   * @param resolve Optional bone lookup, used for VRM.
+   *
+   *   Scene traversal finds bones by the name the *model* happens to use, which
+   *   is the whole problem `boneKey` exists to paper over. A VRM answers the
+   *   question properly: `humanoid.getNormalizedBoneNode("leftIndexProximal")`
+   *   returns the right node whatever the file calls it. Passing that in means
+   *   `vrmLinks` needs no per-model naming knowledge at all.
    */
-  constructor(root, rig, mirrorX = false) {
+  constructor(root, rig, mirrorX = false, resolve) {
     this.rig = rig;
     this.mirrorX = mirrorX;
-    root.traverse((o) => {
-      if (o.isBone) this.bones.set(o.name, o);
-    });
+    if (resolve) {
+      const wanted = new Set(this.rig.links.map((l) => l.bone));
+      for (const name of Object.values(this.rig.landmarks)) wanted.add(name);
+      for (const name of wanted) {
+        const node = resolve(name);
+        if (node) this.bones.set(boneKey(name), node);
+      }
+    } else {
+      root.traverse((o) => {
+        if (o.isBone) this.bones.set(boneKey(o.name), o);
+      });
+    }
     this.calibrate();
     this.build();
   }
@@ -31508,6 +31687,9 @@ var Retargeter = class {
   solved = [];
   /** World rotation per solved bone, rebuilt each frame. */
   world = [];
+  /** Previous frame's local rotation, for the finger speed limit. */
+  prev = [];
+  /** Keyed by `boneKey`, not by literal name — see the note there. */
   bones = /* @__PURE__ */ new Map();
   missing = [];
   /** Clip space -> rig space, measured from the bind pose. See `calibrate`. */
@@ -31518,6 +31700,19 @@ var Retargeter = class {
   inv = new Quaternion();
   q = new Quaternion();
   axis = new Vector3();
+  /** Driven ancestor's world rotation combined with `gap`, rebuilt per bone. */
+  parentWorld = new Quaternion();
+  twist = new Quaternion();
+  swing = new Quaternion();
+  scratch = new Quaternion();
+  /** Target of the finger speed limit, kept off `scratch` which it also uses. */
+  capped = new Quaternion();
+  rollNow = new Vector3();
+  rollWant = new Vector3();
+  rollCross = new Vector3();
+  rollQ = new Quaternion();
+  /** Roll allowance for the current frame, set by `apply` from its dt. */
+  rollStep = 0;
   /** Bones the rig map names but the model lacks — a mapping bug, not a warning. */
   get missingBones() {
     return this.missing;
@@ -31559,17 +31754,18 @@ var Retargeter = class {
    */
   calibrate() {
     const posOf = (name) => {
-      const bone = this.bones.get(name);
+      const bone = this.bones.get(boneKey(name));
       if (!bone) return null;
       const v = new Vector3();
       bone.updateWorldMatrix(true, false);
       v.setFromMatrixPosition(bone.matrixWorld);
       return v;
     };
-    const hips = posOf("spine01") ?? posOf("spine02");
-    const neck = posOf("neck01") ?? posOf("head");
-    const left = posOf("upperarm01.L") ?? posOf("clavicle.L");
-    const right = posOf("upperarm01.R") ?? posOf("clavicle.R");
+    const lm = this.rig.landmarks;
+    const hips = posOf(lm.hips);
+    const neck = posOf(lm.neck) ?? posOf(lm.head);
+    const left = posOf(lm.leftArm);
+    const right = posOf(lm.rightArm);
     if (!hips || !neck || !left || !right) return;
     const up = neck.clone().sub(hips);
     const sideways = left.clone().sub(right);
@@ -31580,10 +31776,47 @@ var Retargeter = class {
     this.basis.makeBasis(sideways, up, forward);
     this.calibrated = true;
   }
+  /**
+   * The direction `bone` points, in its own local space.
+   *
+   * A rig that states `boneAxis` is taken at its word — the MakeHuman rigs do,
+   * and they were verified against that value. Otherwise it is measured, which
+   * is the only option for a VRM.
+   *
+   * The measurement: a bone's geometry runs from itself to its direct child, and
+   * a child's `position` is already expressed in this bone's own space. So the
+   * normalised child offset IS the axis. Which child matters where a bone has
+   * several — a hand has five — so the chain is followed: the link map already
+   * says which joint comes next (`l.from === link.to`), and the direct child on
+   * the path to that bone is the one carrying the bone's length.
+   */
+  axisFor(bone, link) {
+    const stated = this.rig.boneAxis;
+    if (stated) return new Vector3(...stated);
+    const nextName = this.rig.links.find((l) => l.from === link.to)?.bone;
+    const next = nextName ? this.bones.get(boneKey(nextName)) : void 0;
+    let child = null;
+    if (next) {
+      for (let n = next; n; n = n.parent) {
+        if (n.parent === bone) {
+          child = n;
+          break;
+        }
+      }
+    }
+    child ??= bone.children.find((c) => c.position.lengthSq() > 1e-12) ?? null;
+    if (child) {
+      const axis = child.position.clone();
+      if (axis.lengthSq() > 1e-12) return axis.normalize();
+    }
+    const fromParent = bone.position.clone();
+    if (fromParent.lengthSq() > 1e-12) return fromParent.normalize();
+    return DEFAULT_BONE_AXIS.clone();
+  }
   build() {
     const found = [];
     for (const link of this.rig.links) {
-      const bone = this.bones.get(link.bone);
+      const bone = this.bones.get(boneKey(link.bone));
       if (bone) found.push({ bone, link });
       else this.missing.push(link.bone);
     }
@@ -31604,27 +31837,106 @@ var Retargeter = class {
           break;
         }
       }
-      const fixedParent = new Quaternion();
-      if (parent < 0) {
-        for (let p = bone.parent; p; p = p.parent) {
-          fixedParent.premultiply(p.quaternion);
-        }
+      const gap = new Quaternion();
+      for (let p = bone.parent; p; p = p.parent) {
+        if (indexOf.get(p) !== void 0) break;
+        gap.premultiply(p.quaternion);
       }
-      return { bone, link, parent, bind: bone.quaternion.clone(), fixedParent };
+      return {
+        bone,
+        link,
+        parent,
+        bind: bone.quaternion.clone(),
+        gap,
+        // Measured before anything is posed — `apply` overwrites the very
+        // rotations this reads, so it can only be done now.
+        axis: this.axisFor(bone, link),
+        // The knuckle genuinely abducts, so it is a hinge with slack. Every
+        // joint beyond it is a pure hinge. Non-finger bones stay unconstrained.
+        offAxis: link.limit === void 0 ? Infinity : /Proximal$|Metacarpal$|-1\.[LR]$/.test(link.bone) ? KNUCKLE_OFF_AXIS * Math.PI / 180 : 0
+      };
     });
     this.world = this.solved.map(() => new Quaternion());
+    this.prev = this.solved.map((s) => s.bind.clone());
+    this.measureHinges();
+    this.measureRolls();
+  }
+  /**
+   * Record each finger joint's flexion axis, measured from the rest pose.
+   *
+   * `restFrame` curls every finger about the axis a real one bends on, so the
+   * rotation it produces away from the bind pose points along that axis. Taking
+   * it from there means no per-rig table and no assumption about how a
+   * particular skeleton is built — a rig whose fingers rest straight simply
+   * yields no hinge and keeps the old free-swing behaviour.
+   */
+  /**
+   * Record where each roll-controlled bone's reference direction sits at rest.
+   *
+   * Taken in the bone's own space, so a frame's roll is measured as a turn away
+   * from rest rather than against any absolute direction — the same trick
+   * `measureHinges` uses, and for the same reason: nothing rig-specific is
+   * assumed and a rig that cannot supply the reference simply keeps the old
+   * swing-only behaviour.
+   */
+  measureRolls() {
+    const before = this.solved.map((s) => s.bone.quaternion.clone());
+    this.reset();
+    const v = new Vector3();
+    const inv = new Quaternion();
+    for (let i = 0; i < this.solved.length; i++) {
+      const s = this.solved[i];
+      const { rollFrom, rollTo } = s.link;
+      if (rollFrom === void 0 || rollTo === void 0) continue;
+      const a = REST.positions[rollFrom];
+      const b = REST.positions[rollTo];
+      if (!tracked(a) || !tracked(b)) continue;
+      v.set((b[0] - a[0]) * (this.mirrorX ? -1 : 1), b[1] - a[1], b[2] - a[2]);
+      if (this.calibrated) v.applyMatrix4(this.basis);
+      if (v.lengthSq() < 1e-8) continue;
+      v.normalize().applyQuaternion(inv.copy(this.world[i]).invert());
+      s.rollRef = v.clone();
+    }
+    this.solved.forEach((s, i) => s.bone.quaternion.copy(before[i]));
+  }
+  measureHinges() {
+    const before = this.solved.map((s) => s.bone.quaternion.clone());
+    this.reset();
+    const delta = new Quaternion();
+    for (const s of this.solved) {
+      if (s.link.limit === void 0) continue;
+      delta.copy(s.bind).invert().multiply(s.bone.quaternion);
+      const axis = new Vector3(delta.x, delta.y, delta.z);
+      if (axis.lengthSq() > 1e-8) s.hinge = axis.normalize();
+    }
+    this.solved.forEach((s, i) => s.bone.quaternion.copy(before[i]));
   }
   /**
    * Pose the skeleton for one clip frame.
    *
    * `mix` blends towards the solved pose rather than snapping, which smooths
    * 25 fps clips up to display rate and softens the handover between signs.
+   *
+   * `fingerMix` is the same thing for the finger joints, which need a great
+   * deal more of it. Measured over 30 clips sampled at display rate, with no
+   * smoothing at all: an arm bone moves 1.45 degrees per frame and its speed
+   * changes by 0.96 between frames, while a finger joint moves 5.17 and its
+   * speed changes by 5.30 — as much as the motion itself. A signal whose
+   * frame-to-frame acceleration equals its velocity is not carrying motion, it
+   * is carrying noise, and 2D tracking of a foreshortened finger is exactly
+   * where that noise comes from. Filtering both at one rate would either leave
+   * the fingers buzzing or turn the arms to treacle.
+   *
+   * Defaults to `mix`, so `reset` and any caller wanting a hard snap gets one.
    */
-  apply(frame, mix = 1) {
+  apply(frame, mix = 1, fingerMix = mix, dtMs = 0) {
     const pos = frame.positions;
+    const maxStep = dtMs > 0 ? MAX_FINGER_DEG_PER_S * Math.PI * dtMs / 18e4 : 0;
+    const maxBoneStep = dtMs > 0 ? MAX_BONE_DEG_PER_S * Math.PI * dtMs / 18e4 : 0;
+    this.rollStep = dtMs > 0 ? MAX_ROLL_DEG_PER_S * Math.PI * dtMs / 18e4 : 0;
     for (let i = 0; i < this.solved.length; i++) {
       const s = this.solved[i];
-      const parentWorld = s.parent >= 0 ? this.world[s.parent] : s.fixedParent;
+      const parentWorld = s.parent >= 0 ? this.parentWorld.copy(this.world[s.parent]).multiply(s.gap) : s.gap;
       const a = pos[s.link.from];
       const b = pos[s.link.to];
       if (!tracked(a) || !tracked(b)) {
@@ -31642,25 +31954,141 @@ var Retargeter = class {
       }
       if (this.calibrated) this.dir.applyMatrix4(this.basis);
       this.dir.normalize();
-      this.inv.copy(parentWorld).invert();
-      this.dir.applyQuaternion(this.inv);
-      this.q.setFromUnitVectors(BONE_AXIS, this.dir);
-      const limit = s.link.limit;
-      if (limit !== void 0) {
-        const angle = 2 * Math.acos(Math.min(1, Math.abs(this.q.w)));
-        const max = limit * Math.PI / 180;
-        if (angle > max) {
-          this.axis.set(this.q.x, this.q.y, this.q.z);
-          if (this.axis.lengthSq() > 1e-12) {
-            this.axis.normalize();
-            this.q.setFromAxisAngle(this.axis, this.q.w < 0 ? -max : max);
+      if (s.link.limit !== void 0 && fingerMix < 1) {
+        if (s.dirFilter) {
+          s.dirFilter.lerp(this.dir, fingerMix);
+          if (s.dirFilter.lengthSq() > 1e-8) {
+            s.dirFilter.normalize();
+            this.dir.copy(s.dirFilter);
+          } else {
+            s.dirFilter.copy(this.dir);
           }
+        } else {
+          s.dirFilter = this.dir.clone();
         }
       }
-      if (mix >= 1) s.bone.quaternion.copy(this.q);
-      else s.bone.quaternion.slerp(this.q, mix);
+      this.inv.copy(parentWorld).invert();
+      this.dir.applyQuaternion(this.inv);
+      this.q.setFromUnitVectors(s.axis, this.dir);
+      if (s.rollRef) this.applyRoll(s, pos);
+      if (s.link.limit !== void 0) this.constrainJoint(s);
+      const share = s.link.share;
+      if (share !== void 0 && share < 1) {
+        this.scratch.identity().slerp(this.q, share);
+        this.q.copy(this.scratch);
+      }
+      const isFinger = s.link.limit !== void 0;
+      const m = isFinger ? fingerMix : mix;
+      if (m >= 1) s.bone.quaternion.copy(this.q);
+      else s.bone.quaternion.slerp(this.q, m);
+      const cap = isFinger ? maxStep : maxBoneStep;
+      if (cap > 0) {
+        this.scratch.copy(this.prev[i]).invert().multiply(s.bone.quaternion);
+        const step2 = 2 * Math.acos(Math.min(1, Math.abs(this.scratch.w)));
+        if (step2 > cap) {
+          this.capped.copy(s.bone.quaternion);
+          s.bone.quaternion.copy(this.prev[i]).slerp(this.capped, cap / step2);
+        }
+      }
+      this.prev[i].copy(s.bone.quaternion);
       this.world[i].copy(parentWorld).multiply(s.bone.quaternion);
     }
+  }
+  /**
+   * Rotate `this.q` about the bone's own axis so the roll reference lines up.
+   *
+   * `this.dir` is the target direction in parent space and `this.inv` the
+   * inverse of the parent's world rotation, both already set by `apply`.
+   *
+   * Falls through silently whenever the reference keypoints are untracked or
+   * too close together, leaving the swing-only rotation. That is the right
+   * failure: an unknown roll should stay at whatever the previous frame had
+   * rather than snap to a guess, and the hand keypoints are missing about a
+   * fifth of the time.
+   */
+  applyRoll(s, pos) {
+    const a = pos[s.link.rollFrom];
+    const b = pos[s.link.rollTo];
+    if (!tracked(a) || !tracked(b)) return;
+    this.rollWant.set(
+      (b[0] - a[0]) * (this.mirrorX ? -1 : 1),
+      b[1] - a[1],
+      b[2] - a[2]
+    );
+    if (this.rollWant.lengthSq() < MIN_SEGMENT * MIN_SEGMENT) return;
+    if (this.calibrated) this.rollWant.applyMatrix4(this.basis);
+    this.rollWant.normalize().applyQuaternion(this.inv);
+    this.rollNow.copy(s.rollRef).applyQuaternion(this.q);
+    this.rollNow.addScaledVector(this.dir, -this.rollNow.dot(this.dir));
+    this.rollWant.addScaledVector(this.dir, -this.rollWant.dot(this.dir));
+    if (this.rollNow.lengthSq() < 1e-6 || this.rollWant.lengthSq() < 1e-6) return;
+    this.rollNow.normalize();
+    this.rollWant.normalize();
+    const cos = Math.min(1, Math.max(-1, this.rollNow.dot(this.rollWant)));
+    this.rollCross.crossVectors(this.rollNow, this.rollWant);
+    let angle = this.rollCross.dot(this.dir) < 0 ? -Math.acos(cos) : Math.acos(cos);
+    const prev = s.rollPrev ?? 0;
+    const alt = angle > 0 ? angle - Math.PI : angle + Math.PI;
+    if (Math.abs(alt - prev) < Math.abs(angle - prev)) angle = alt;
+    const limit = MAX_WRIST_ROLL * Math.PI / 180;
+    angle = Math.min(limit, Math.max(-limit, angle));
+    if (this.rollStep > 0) {
+      const d = angle - prev;
+      if (Math.abs(d) > this.rollStep) angle = prev + Math.sign(d) * this.rollStep;
+    }
+    s.rollPrev = angle;
+    this.rollQ.setFromAxisAngle(this.dir, angle);
+    this.q.premultiply(this.rollQ);
+  }
+  /**
+   * Reduce a solved rotation to one the joint can physically make.
+   *
+   * Decomposes the swing about the measured flexion axis (a swing-twist split),
+   * keeps the flexion, and allows only as much off-axis rotation as that joint
+   * really has — none beyond the knuckle. The flexion itself is held between a
+   * little hyperextension and the anatomical limit.
+   *
+   * The result is that noise perpendicular to the hinge, which is most of it in
+   * a 2D source, stops reaching the pose at all rather than being bent into an
+   * impossible shape and then clipped.
+   */
+  constrainJoint(s) {
+    const limit = (s.link.limit ?? 110) * Math.PI / 180;
+    const floor = -(MAX_HYPEREXTENSION * Math.PI) / 180;
+    const h = s.hinge;
+    if (!h) {
+      const angle2 = 2 * Math.acos(Math.min(1, Math.abs(this.q.w)));
+      if (angle2 > limit) {
+        this.axis.set(this.q.x, this.q.y, this.q.z);
+        if (this.axis.lengthSq() > 1e-12) {
+          this.axis.normalize();
+          this.q.setFromAxisAngle(this.axis, this.q.w < 0 ? -limit : limit);
+        }
+      }
+      return;
+    }
+    const proj = this.q.x * h.x + this.q.y * h.y + this.q.z * h.z;
+    this.twist.set(h.x * proj, h.y * proj, h.z * proj, this.q.w);
+    const len = Math.hypot(this.twist.x, this.twist.y, this.twist.z, this.twist.w);
+    if (len < 1e-12) this.twist.identity();
+    else this.twist.set(this.twist.x / len, this.twist.y / len, this.twist.z / len, this.twist.w / len);
+    const sinHalf = this.twist.x * h.x + this.twist.y * h.y + this.twist.z * h.z;
+    const angle = 2 * Math.atan2(sinHalf, this.twist.w);
+    this.twist.setFromAxisAngle(h, Math.min(limit, Math.max(floor, angle)));
+    if (s.offAxis <= 0) {
+      this.q.copy(this.twist);
+      return;
+    }
+    this.swing.copy(this.q).multiply(this.scratch.copy(this.twist).invert());
+    const off = 2 * Math.acos(Math.min(1, Math.abs(this.swing.w)));
+    if (off > s.offAxis) {
+      this.axis.set(this.swing.x, this.swing.y, this.swing.z);
+      if (this.axis.lengthSq() > 1e-12) {
+        this.axis.normalize();
+        this.swing.setFromAxisAngle(this.axis, this.swing.w < 0 ? -s.offAxis : s.offAxis);
+      }
+    }
+    this.q.copy(this.swing).multiply(this.twist);
   }
   /**
    * Return to a neutral standing pose — arms down, not the T-pose.
@@ -31671,13 +32099,27 @@ var Retargeter = class {
    * so "resting" is expressed in the same terms as every real sign.
    */
   reset() {
+    for (const s of this.solved) {
+      s.dirFilter = void 0;
+      s.rollPrev = void 0;
+    }
+    this.solved.forEach((s, i) => this.prev[i]?.copy(s.bind));
     for (const s of this.solved) s.bone.quaternion.copy(s.bind);
     this.apply(REST, 1);
   }
 };
+
+// extension/src/shared/capture.ts
+function captureActiveFor(state, askingTabId) {
+  if (askingTabId === void 0) return state.active;
+  return state.active && state.tabId === askingTabId;
+}
 export {
+  RIGS,
   Retargeter,
   three_module_exports as THREE,
+  boneKey,
+  captureActiveFor,
   restFrame,
   rigById
 };

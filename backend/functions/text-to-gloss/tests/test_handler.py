@@ -182,3 +182,62 @@ def test_handler_drops_locked_bsl(
     result = handler.handler(make_transcript_event(text="hello", language="BSL"), None)
     assert result == {"emitted": 0, "reason": "invalid-language"}
     patched_boto3["ws"].post_to_connection.assert_not_called()
+
+
+def test_handler_marks_fingerspelled_letters_for_faster_playback(
+    env: None,
+    reset_handler_state: None,
+    patched_boto3: dict[str, MagicMock],
+    monkeypatch,
+) -> None:
+    """A spelled word must reach the client flagged, or it plays at sign pace.
+
+    The avatar runs a flagged clip at FINGERSPELL_SPEED (2.2x) with a short
+    cross-fade. Without the flag a five-letter word is five ~1.5 s clips — the
+    avatar falls about eleven seconds behind the speaker on one word, and the
+    letters expire against MAX_SIGN_AGE_MS before the word finishes.
+    """
+    import fingerspell
+
+    # The shipped alphabet is 20/26, so nothing is spellable yet and the flag
+    # would never be exercised. Grant a full alphabet to test the wiring, which
+    # is what has to be right before the last six letters land.
+    monkeypatch.setattr(
+        fingerspell, "_BUNDLED", {"ASL": frozenset("abcdefghijklmnopqrstuvwxyz")}
+    )
+
+    handler = _import_handler()
+    # "Kofi" is not in the ASL vocabulary, so it can only be spelled.
+    event = make_transcript_event(text="Kofi", language="ASL")
+
+    handler.handler(event, None)
+
+    ws = patched_boto3["ws"]
+    payloads = [
+        json.loads(call.kwargs["Data"].decode("utf-8"))
+        for call in ws.post_to_connection.call_args_list
+    ]
+    assert [p["id"] for p in payloads] == [
+        "asl-k-v1", "asl-o-v1", "asl-f-v1", "asl-i-v1",
+    ]
+    assert all(p.get("fingerspell") is True for p in payloads)
+
+
+def test_handler_does_not_mark_lexical_signs_as_fingerspelled(
+    env: None,
+    reset_handler_state: None,
+    patched_boto3: dict[str, MagicMock],
+) -> None:
+    """Speeding up a real sign would rush the part that carries the meaning."""
+    handler = _import_handler()
+    event = make_transcript_event(text="Hello", language="ASL")
+
+    handler.handler(event, None)
+
+    ws = patched_boto3["ws"]
+    payloads = [
+        json.loads(call.kwargs["Data"].decode("utf-8"))
+        for call in ws.post_to_connection.call_args_list
+    ]
+    assert payloads, "expected at least one sign"
+    assert all("fingerspell" not in p for p in payloads)

@@ -20,8 +20,9 @@ from typing import Any
 
 from signstream_common import WARMUP_RESPONSE, is_warmup
 
+from fingerspell import bundled_alphabet
 from mapper import VALID_LANGUAGES, Dictionary, MappedSign, map_tokens
-from normaliser import proper_noun_tokens, tokenise
+from normaliser import tokenise
 from publisher import Publisher
 
 log = logging.getLogger()
@@ -101,11 +102,20 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
 
     dictionary = _get_dictionary(language)
     tokens = tokenise(text)
-    # Proper nouns are read from the ORIGINAL text, before normalisation
-    # lowercases it — capitalisation is the only signal that a word is a name
-    # worth fingerspelling rather than ordinary vocabulary.
+    # `alphabet` is what enables fingerspelling at all, and it was not being
+    # passed — so a word with no sign was silently dropped in production while
+    # the dev gateway spelled it. Read from the manifest bundled beside the
+    # vocabularies, because the clips themselves live on the CDN and this
+    # Lambda never sees them.
+    #
+    # `spellable=None` means "spell ANY word with no sign", not only the ones
+    # that look like proper nouns. The narrower rule modelled an interpreter,
+    # who paraphrases an unfamiliar ordinary word rather than spelling it — but
+    # paraphrasing needs a lexicon this system does not have, so in practice
+    # the word was simply lost. Spelling it is the honest rendering of what was
+    # said, and it matches what the dev gateway already does.
     signs: list[MappedSign] = map_tokens(
-        tokens, dictionary, spellable=proper_noun_tokens(text)
+        tokens, dictionary, bundled_alphabet(language), spellable=None
     )
 
     log.debug(
@@ -122,6 +132,9 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         publisher.push_sign_id_to_client(
             connection_id=connection_id,
             sign_id=sign.sign_id,
+            # Letters play at 2.2x with a short cross-fade so a spelled word
+            # keeps pace with the speaker. Lexical signs are unaffected.
+            fingerspell=sign.is_fingerspell,
         )
         publisher.publish_sign_id_event(
             connection_id=connection_id,

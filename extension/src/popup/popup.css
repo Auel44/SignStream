@@ -1145,113 +1145,11 @@ body[data-surface="tab"] .lede {
   padding: 16px 18px;
 }
 
-/* ── Status page ─────────────────────────────────────────────────────────
-   One row per pipeline stage, in the order audio actually flows through them,
-   so the first row showing nothing is the stage at fault. */
-
-.status-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  background: var(--border-soft);
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.status-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  background: var(--surface);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--ink-faint);
-}
-
-.status-dot.is-ok {
-  background: var(--ok);
-}
-
-.status-label {
-  flex: 1;
-  font-size: 12.5px;
-  color: var(--ink);
-}
-
-.status-value {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--ink-muted);
-}
-
-.status-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--ink-muted);
-}
-
-.status-meta-key {
-  color: var(--ink-label);
-  margin-right: 6px;
-}
-
-.status-transcript {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.status-empty {
-  font-size: 13px;
-  color: var(--ink-muted);
-}
-
-.title-sm {
-  font-size: 18px;
-  margin-bottom: 4px;
-}
-
-.lede-sm {
-  margin-bottom: 0;
-  font-size: 13.5px;
-  line-height: 1.5;
-  color: oklch(0.52 0.015 65);
-}
-
-.saved-pill {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  padding: 5px 9px;
-  border-radius: 999px;
-  background: var(--chip);
-  color: oklch(0.5 0.02 65);
-  transition: all 0.3s;
-}
-
-.saved-pill.is-saved {
-  background: oklch(0.95 0.05 155);
-  color: oklch(0.42 0.09 155);
-}
-
-.group-label {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-label);
-  margin-bottom: 10px;
-}
+/* --- Restored rules -----------------------------------------------------
+   These were removed by accident along with the Status page's styles: that
+   deletion ran from its section comment to the next one, and the rules below
+   sat in between without a heading of their own. Losing them left the backdrop
+   picker, the privacy table and the reset button unstyled. */
 
 .group-head {
   display: flex;
@@ -1268,100 +1166,6 @@ body[data-surface="tab"] .lede {
   font-family: var(--font-mono);
   font-size: 11px;
   color: oklch(0.42 0.02 65);
-}
-
-.section-note {
-  margin: 0 0 10px;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--ink-muted);
-  text-wrap: pretty;
-}
-
-.note-tight {
-  margin-top: 10px;
-  padding: 13px 14px;
-  align-items: stretch;
-}
-
-.preview.is-compact {
-  border-radius: 14px;
-  margin-bottom: 10px;
-}
-
-.preview-avatar.is-plateless {
-  border: 1.5px dashed oklch(0.99 0.005 80 / 0.8);
-}
-
-.chip-grid-tight {
-  gap: 7px;
-  margin-bottom: 8px;
-}
-
-.chip-row-tight {
-  gap: 7px;
-  margin-bottom: 0;
-}
-
-.row.is-tight {
-  gap: 11px;
-  padding: 11px 13px;
-  min-height: 56px;
-  border-radius: 14px;
-}
-
-.row-swatch.is-sm {
-  width: 34px;
-  height: 34px;
-}
-
-/* Backdrop picker */
-
-.backdrop-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 7px;
-}
-
-.backdrop {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 9px 4px;
-  border-radius: 12px;
-  cursor: pointer;
-  background: var(--surface-sunken);
-  border: 1.5px solid var(--border);
-  color: oklch(0.42 0.02 65);
-  transition: all 0.2s;
-}
-
-.backdrop.is-selected {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: oklch(0.34 0.05 45);
-}
-
-.backdrop-swatch {
-  width: 100%;
-  height: 26px;
-  border-radius: 7px;
-  border: 1px solid oklch(0.85 0.012 78);
-}
-
-.backdrop-swatch.is-none {
-  background: repeating-linear-gradient(
-    135deg,
-    oklch(0.93 0.01 78) 0 5px,
-    oklch(0.87 0.01 78) 5px 10px
-  );
-}
-
-.backdrop-label {
-  font-family: var(--font-body);
-  font-size: 11px;
-  font-weight: 500;
 }
 
 /* Privacy table */
@@ -1417,4 +1221,84 @@ body[data-surface="tab"] .lede {
 
 .btn-danger:hover {
   background: oklch(0.97 0.02 30);
+}
+
+
+/* --- Backdrop picker ----------------------------------------------------
+   Each option shows what it actually does rather than naming it.
+
+   The old version was a flat colour swatch with a caption, which asks the
+   reader to imagine the result: a grey square does not tell you what "Studio"
+   looks like behind a signer over video. Each button is now a miniature of the
+   real thing - the stripes stand in for the video frame, the plate is drawn on
+   top exactly as the overlay draws it, and a glyph stands in for the signer.
+   "None" shows the stripes straight through, which is precisely what choosing
+   it does. */
+
+.backdrop-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.backdrop {
+  appearance: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  cursor: pointer;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.backdrop:hover { border-color: var(--border-strong); }
+
+.backdrop.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* Stand-in for the video the plate sits over. */
+.backdrop-swatch {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  background-image: repeating-linear-gradient(
+    135deg,
+    oklch(0.86 0.02 78) 0 6px,
+    oklch(0.8 0.02 78) 6px 12px
+  );
+}
+
+/* The plate itself, inset so the "video" shows around it. */
+.backdrop-plate {
+  position: absolute;
+  inset: 20% 16%;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* `none` draws no plate at all - the stripes read straight through, which is
+   what the setting does over real video. */
+.backdrop-plate.is-none { background: transparent; }
+
+.backdrop-label {
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 5px 3px 6px;
+  color: var(--ink-muted);
+  text-align: center;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface);
+}
+
+.backdrop.is-selected .backdrop-label {
+  color: var(--ink);
+  font-weight: 600;
 }

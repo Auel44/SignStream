@@ -21,7 +21,7 @@
 // normally costs a disk read, not a request.
 
 import { resolveDictionaryBaseUrl, signClipUrl } from "../shared/config";
-import type { ExtensionSettings, SignClip } from "../shared/types";
+import type { ExtensionMessage, ExtensionSettings, SignClip } from "../shared/types";
 
 /**
  * Cache budget, counted in animation frames rather than entries, because clip
@@ -102,11 +102,29 @@ export function loadSignClip(
     return Promise.resolve(null);
   }
 
-  const request = fetch(url)
-    .then(async (res) => {
-      if (res.ok) {
-        const data = await res.json();
-        const clip = isSignClip(data) ? data : null;
+  // Asked of the service worker rather than fetched here.
+  //
+  // A content script's `fetch` carries the PAGE's origin, so fetching a clip
+  // from `http://localhost:8081` is a request from `https://www.youtube.com`
+  // into the loopback address space — which Chrome refuses:
+  //
+  //   "blocked by CORS policy: Permission was denied for this request to
+  //    access the `loopback` address space."
+  //
+  // Every clip failed that way, so the avatar received sign ids it could never
+  // play. The service worker has the extension's own origin and its host
+  // permissions, and is not bound by the page's rules.
+  const request = chrome.runtime
+    .sendMessage({ type: "FETCH_CLIP", url } satisfies ExtensionMessage)
+    .then((res: ExtensionMessage | undefined) => {
+      if (res?.type !== "CLIP_DATA") {
+        // No answer at all — the worker was asleep or the context is gone.
+        // Transient, so it must not be cached.
+        console.warn(`[SignStream] no response from the service worker fetching ${signId}`);
+        return null;
+      }
+      if (res.status >= 200 && res.status < 300) {
+        const clip = isSignClip(res.body) ? res.body : null;
         if (!clip) console.debug(`[SignStream] malformed clip for ${signId}`);
         // A well-formed 200, or a 200 carrying junk: both are final answers.
         remember(signId, clip);
@@ -119,20 +137,15 @@ export function loadSignClip(
         remember(signId, null);
         return null;
       }
-      // 5xx and friends say nothing about whether the clip exists. Returning
-      // null WITHOUT caching lets the next occurrence try again.
-      console.debug(`[SignStream] clip fetch for ${signId} failed: HTTP ${res.status}`);
+      // Status 0 is a network-level failure — server down, DNS, blocked. 5xx
+      // says nothing about whether the clip exists either. Neither is cached,
+      // so a dictionary that comes back later starts working again rather than
+      // staying poisoned for the life of the page.
+      console.warn(`[SignStream] clip fetch for ${signId} failed: status ${res.status}`);
       return null;
     })
     .catch((err) => {
-      // Network-level failure — server down, DNS, CORS. Emphatically NOT a
-      // statement that the clip is missing.
-      //
-      // This used to cache null, which meant a momentarily unreachable
-      // dictionary poisoned every sign id for the lifetime of the page: the
-      // avatar then sat silent even after the server came back, with no
-      // further requests to show why. Transient errors must never be cached.
-      console.debug(`[SignStream] clip fetch for ${signId} errored:`, err);
+      console.debug(`[SignStream] clip request for ${signId} errored:`, err);
       return null;
     })
     .finally(() => {

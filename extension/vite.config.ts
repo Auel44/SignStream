@@ -19,6 +19,17 @@ export default defineConfig({
       additionalInputs: ["src/offscreen/offscreen.html", "src/offscreen/pcm-worklet.ts"],
     }),
   ],
+  // A stamp identifying which build is actually running.
+  //
+  // Reloading the extension does NOT replace the content script in a tab that
+  // is already open — content scripts are injected at page load — so a fix can
+  // be built, shipped and still not be what the page is executing. Diagnosing
+  // that from a stack trace alone wasted real time: a trace pointed at code the
+  // shipped build could no longer reach, because the tab was running the
+  // previous one. The stamp settles it in one line.
+  define: {
+    __BUILD_STAMP__: JSON.stringify(new Date().toISOString().replace("T", " ").slice(0, 19)),
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,

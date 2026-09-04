@@ -7,8 +7,9 @@
 // when a clip is unavailable so playback degrades rather than stalls.
 
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
+  VRMExpressionLoaderPlugin,
   VRMLoaderPlugin,
   VRMUtils,
   type VRM,
@@ -33,13 +34,23 @@ import { addSigningDepth, boneKey, rigById, type Rig } from "./rigs";
 const MAX_SIGN_AGE_MS = 6000;
 
 /**
- * Backlog cap.
+ * Backlog cap — a memory guard, not a policy.
  *
- * Generous because the caption path schedules signs *ahead* of playback — a
- * whole video's worth can be queued before it starts. Signs are removed by
- * age, not by position, so the cap is only a memory guard.
+ * The caption path does not trickle signs in: `captions.ts` walks the whole
+ * text track the moment it loads, so an entire video's signs are queued before
+ * playback has moved. Measured against a 13-minute stream, 462 signs arrived
+ * up front — about 35 per minute — so 256 was exceeded within the first minute
+ * of content and everything past it was discarded.
+ *
+ * 4096 holds roughly two hours at that rate. It costs almost nothing: an entry
+ * is three numbers, a flag and a *reference* to a clip, and the clips
+ * themselves are bounded separately by the frame budget in sign-clips.ts, so
+ * a longer queue does not pin more clip memory.
+ *
+ * When it is exceeded the FURTHEST-FUTURE signs go, never the due ones — see
+ * `enqueueClip`.
  */
-const MAX_QUEUE = 256;
+const MAX_QUEUE = 4096;
 
 /**
  * Cross-fade when handing over from one sign to the next.
@@ -68,6 +79,13 @@ const BLEND_MS = 140;
  *   tau 110   speed 1.01  jerk 0.20    speed 1.87  jerk 0.64    sat 5.9%
  *   tau 160   speed 0.91  jerk 0.14    speed 1.56  jerk 0.45    sat 5.0%
  *
+ * Fingers were raised from 110 to 150 once their joints were constrained to
+ * hinges. With the sideways and backwards noise gone, the filter no longer has
+ * to fight it, so the extra smoothing buys a further 26% off the jerk for 6% of
+ * handshape range (53.3 to 49.9 degrees measured across 34 clips). Past 150 the
+ * exchange turns: each further step costs about as much handshape as it gains
+ * smoothness, and handshape is the part that carries meaning.
+ *
  * 70 ms is the knee for the arms: it removes 69% of the jerk while keeping 77%
  * of the motion. Fingers get 110 ms because their noise floor is five times
  * higher — that cuts their jerk by 88% and more than halves the joints pinned
@@ -79,7 +97,7 @@ const BLEND_MS = 140;
  * erase the handshape — and handshape is the part that carries meaning.
  */
 const SMOOTHING_MS = 70;
-const FINGER_SMOOTHING_MS = 110;
+const FINGER_SMOOTHING_MS = 150;
 
 // Both constants below are measured, not chosen. Posing the rig through 81,492
 // hand-joint samples — every wrist, middle fingertip and thumb tip across a
@@ -94,39 +112,44 @@ const FINGER_SMOOTHING_MS = 110;
 // waist — which is why the frame cannot simply end there.
 
 /**
- * How much wider than the shoulder joints the shot must be.
+ * Half-width of the shot, as a fraction of the avatar's reach.
  *
  * The crop cannot be driven by height alone: at 220x280 the frame is taller
- * than it is wide, so fitting the head-to-waist span exactly would clip a sign
- * that reaches out to the side. 2.1 is the p99 lateral reach over the sample
- * above (0.384 either side of a 0.365 shoulder span), widened slightly to 2.2
- * where the curve is still cheap: measured against joints the clips actually
- * track, that leaves 1.0% of them clipped at the sides, against 1.5% at 2.1 and
- * 0.7% at 2.3. What remains are outliers near the 0.651 maximum — nearly a
- * third beyond p99, and tracker noise rather than real reach. Chasing them
- * would zoom out for every sign.
+ * than it is wide, so fitting the vertical span exactly would clip a sign that
+ * reaches out to the side.
  *
- * An earlier guess of 1.8 put a fingertip outside the frame on 31% of ASL
- * frames, which is what this replaces.
+ * This was a multiple of SHOULDER SPAN, which only worked while every rig was a
+ * MakeHuman export with human proportions. Across the twelve VRM rigs the width
+ * the clips actually need ranges from 1.9 to 5.9 times the shoulders — Ferk's
+ * are 0.11 wide against a 0.47 arm — so no shoulder-based constant frames them
+ * all, and most were cropped. Against reach (`shoulders/2 + arm`) the same
+ * measurements fall in a narrow 0.57-0.68 band, because reach is the thing that
+ * physically bounds where a hand can be. 0.72 covers the widest with headroom.
  */
-const SIGNING_WIDTH = 2.2;
+const SIGNING_REACH = 0.72;
 
 /**
- * Air left below the waist, as a fraction of the waist-to-crown span.
+ * How far below the waist the shot extends, as a fraction of reach.
  *
- * Not styling: hands drop below the waist bone on about 5% of frames, and at
- * rest they sit near waist height, so a frame ending exactly there slices
- * through them. 0.12 clears the p5 depth with a little room, and leaves 0.3% of
- * tracked joints clipped at the bottom.
+ * Measured the same way and for the same reason: the lowest a hand goes ranges
+ * from 0.21 to 0.66 of the torso across these rigs, but only 0.25 to 0.45 of
+ * reach. 0.48 clears every one of them.
  *
- * It deliberately does not stretch to the p1 (-0.166). Widening it to 0.20 only
- * recovers that 0.3%, and these rigs are full-body — `male_casualsuit05Mesh` has
- * trousers — so every extra centimetre below the hips is thigh in shot on every
- * sign. Most of what it would recover is the idle hand of a one-handed sign
- * hanging at the signer's side, which carries no meaning: across the sample,
- * two thirds of all clipped frames involve only a hand the clip does not track.
+ * It costs some leg in shot on the shorter-legged avatars. That is the right
+ * trade: a cropped hand destroys the sign, whereas a visible thigh only makes
+ * the shot less tidy.
  */
-const WAIST_MARGIN = 0.12;
+const BELOW_WAIST_REACH = 0.48;
+
+
+/**
+ * Air above the measured crown, as a fraction of the head-to-waist span.
+ *
+ * Small on purpose. The crown is now measured rather than estimated, so this is
+ * only breathing room — spending more of a 220x280 box on empty sky above the
+ * head makes the hands smaller, and handshape is what has to stay legible.
+ */
+const CROWN_AIR = 0.06;
 
 interface PendingSign {
   clip: SignClip;
@@ -176,6 +199,42 @@ const FINGERSPELL_SPEED = 2.2;
  * word into pieces, which is the opposite of how spelling reads.
  */
 const FINGERSPELL_BLEND_MS = 45;
+
+/**
+ * Hand-over from REST into the first sign of an utterance.
+ *
+ * Longer than BLEND_MS on purpose. Between two signs the hands are already in
+ * signing space and only change shape, which is quick. Coming out of rest they
+ * have to travel there — a real interpreter lifts into position over roughly a
+ * third of a second, and it is a visible preparatory movement, not an
+ * instant one. Using the 140 ms between-signs figure read as a flinch.
+ */
+const ENTRY_BLEND_MS = 340;
+
+/**
+ * Expression loader that loads nothing.
+ *
+ * `VRMLoaderPlugin` builds a default expression plugin when none is given, so
+ * opting out means supplying one that does nothing rather than passing null.
+ * Overriding `afterRoot` leaves `gltf.userData.vrmExpressionManager` unset,
+ * which is exactly what the VRM constructor treats as "this model has no
+ * expressions".
+ */
+class SkipExpressions extends VRMExpressionLoaderPlugin {
+  public async afterRoot(gltf: GLTF): Promise<void> {
+    // NULL, not left undefined. three-vrm treats the two differently, and the
+    // distinction is its designed contract for exactly this:
+    //
+    //   null      -> "this model has no expressions"  (dependants return early)
+    //   undefined -> "the expression plugin never ran" (dependants THROW)
+    //
+    // Leaving it undefined made VRMLookAtLoaderPlugin throw
+    // "vrmExpressionManager is undefined", which failed the whole load and put
+    // "Avatar unavailable" on the overlay — far worse than the console warning
+    // this was meant to silence.
+    gltf.userData.vrmExpressionManager = null;
+  }
+}
 
 export class Avatar {
   private renderer: THREE.WebGLRenderer;
@@ -237,6 +296,16 @@ export class Avatar {
    */
   private blendMsLeft = 0;
   /**
+   * How long the blend now running was given, so its progress can be measured.
+   *
+   * Without it the smoothstep divided by BLEND_MS whatever the blend actually
+   * was. A fingerspelled letter starts a 45 ms hand-over, so `u` began at
+   * 1 - 45/140 = 0.68 and the ease started 79% of the way done — the letter
+   * snapped in rather than easing, which is the opposite of what the shorter
+   * blend was for.
+   */
+  private blendMsTotal = BLEND_MS;
+  /**
    * What the shot must contain, in world units, measured from the skeleton.
    *
    * Kept rather than consumed on the spot because the camera distance that
@@ -246,10 +315,19 @@ export class Avatar {
   private framing: {
     up: THREE.Vector3;
     forward: THREE.Vector3;
-    /** World position of the waist — the bottom edge of the shot. */
-    waist: THREE.Vector3;
-    /** Waist to crown. */
-    spanY: number;
+    /** A world point on the body's vertical axis; the offsets are relative to it. */
+    anchor: THREE.Vector3;
+    /**
+     * Where the shot starts and ends along `up`, relative to `anchor`.
+     *
+     * Both edges are stated outright rather than derived from a span plus a
+     * margin. That indirection had an arithmetic bug: the bottom margin was
+     * subtracted from a span that did not include it, so the margin was taken
+     * out of the TOP of the frame and the crown was pushed off the top edge.
+     * With both edges explicit, the frame covers exactly what it says it does.
+     */
+    bottomOffset: number;
+    topOffset: number;
     /** Width of the signing space, wider than the body itself. */
     spanX: number;
   } | null = null;
@@ -297,7 +375,27 @@ export class Avatar {
       const url = chrome.runtime.getURL(this.rig.file);
       const loader = new GLTFLoader();
       if (this.rig.format === "vrm") {
-        loader.register((parser) => new VRMLoaderPlugin(parser));
+        loader.register(
+          (parser) =>
+            new VRMLoaderPlugin(parser, {
+              // Expressions are not loaded at all. Nothing here drives visemes
+              // or emotions — the avatar's job is handshape — so parsing them
+              // is pure cost, and several of the shipped CC0 avatars carry
+              // duplicate preset entries which made three-vrm log
+              //
+              //   "An expression preset blink_l has duplicated entries"
+              //
+              // into the HOST PAGE's console on every load. The warning is
+              // correct: it is a defect in those files. But it appears in a
+              // viewer's YouTube console attributed to a line of bundled
+              // three.js, which reads like a rendering fault in this extension
+              // and is not one.
+              //
+              // `VRM.update` guards every use of the manager (`if
+              // (this.expressionManager)`), so leaving it unbuilt is safe.
+              expressionPlugin: new SkipExpressions(parser),
+            }),
+        );
       }
       const gltf = await loader.loadAsync(url);
 
@@ -459,26 +557,84 @@ export class Avatar {
 
     const top = at(head);
     const waist = at(waistBone);
-
-    // The head BONE sits at the base of the skull, so extend upwards to take in
-    // the crown plus a little air. Measured against this rig: the head-to-waist
-    // span is ~0.61 and the crown sits ~0.18 above the head bone, so 0.3 of the
-    // span is about right and scales with any model.
     const spineLen = top.distanceTo(waist);
-    top.addScaledVector(axes.up, spineLen * 0.3);
+
+    // Where the head actually ENDS, measured from the mesh rather than guessed
+    // from the head bone.
+    //
+    // This used to extend the head bone upwards by 0.3 of the head-to-waist
+    // span, a ratio measured on the MakeHuman rigs. It is not a property of
+    // avatars in general, and every rig now shipped breaks it: measured across
+    // all twelve, the crown sits between 0.44 and 1.38 of that span above the
+    // head bone — up to 4.6x the assumption — because a stylised avatar carries
+    // a far bigger head on a shorter torso. The result was that every one of
+    // them, Aurora included, was framed with the top of its head cut off.
+    //
+    // The bounding box is taken in the bind pose, which is what makes it safe
+    // to use for this: skinning moves the limbs, not the skull, so the top of
+    // the box is the top of the head whatever the avatar goes on to do. Signing
+    // space stays below the crown (measured: p99 hand height is 0.63 against a
+    // crown at 0.82), so nothing is lost by framing to it.
+    const crown = this.measureCrown(axes.up);
+    if (crown !== null) {
+      // Put the measured crown at the top of the shot, plus a little air so the
+      // head is not flush against the edge.
+      const air = spineLen * CROWN_AIR;
+      top.copy(waist).addScaledVector(axes.up, crown - waist.dot(axes.up) + air);
+    } else {
+      // No renderable geometry to measure — fall back to the old estimate.
+      top.addScaledVector(axes.up, spineLen * 0.3);
+    }
 
     const armL = bone(lm.leftArm);
     const armR = bone(lm.rightArm);
     const shoulders = armL && armR ? at(armL).distanceTo(at(armR)) : spineLen * 0.5;
 
+    // How far a hand can get from the body's midline: half the shoulders plus
+    // the arm. This, not shoulder width, is what bounds signing space — see the
+    // note on Landmarks.leftElbow.
+    const elbow = lm.leftElbow ? bone(lm.leftElbow) : undefined;
+    const hand = lm.leftHand ? bone(lm.leftHand) : undefined;
+    const armLen =
+      armL && elbow && hand
+        ? at(armL).distanceTo(at(elbow)) + at(elbow).distanceTo(at(hand))
+        : shoulders; // rough stand-in when a rig names no arm chain
+    const reach = shoulders / 2 + armLen;
+
+    const up = axes.up.clone().normalize();
     this.framing = {
-      up: axes.up.clone().normalize(),
+      up,
       forward: axes.forward.clone().normalize(),
-      waist,
-      spanY: top.distanceTo(waist),
-      spanX: shoulders * SIGNING_WIDTH,
+      anchor: waist,
+      // Both edges scale with reach, so an avatar's own proportions decide the
+      // crop rather than a constant borrowed from a different skeleton.
+      bottomOffset: -reach * BELOW_WAIST_REACH,
+      topOffset: top.dot(up) - waist.dot(up),
+      spanX: 2 * reach * SIGNING_REACH,
     };
     this.applyFraming();
+  }
+
+  /**
+   * Highest point of the avatar's geometry along `up`, in world space.
+   *
+   * Returns null when there is nothing renderable to measure. The eight corners
+   * of the box are projected rather than reading `box.max.y`, so this stays
+   * correct for a rig whose up axis is not exactly +Y.
+   */
+  private measureCrown(up: THREE.Vector3): number | null {
+    if (!this.figure) return null;
+    const box = new THREE.Box3().setFromObject(this.figure);
+    if (box.isEmpty()) return null;
+    let highest = -Infinity;
+    for (const x of [box.min.x, box.max.x]) {
+      for (const y of [box.min.y, box.max.y]) {
+        for (const z of [box.min.z, box.max.z]) {
+          highest = Math.max(highest, new THREE.Vector3(x, y, z).dot(up));
+        }
+      }
+    }
+    return Number.isFinite(highest) ? highest : null;
   }
 
   /**
@@ -502,12 +658,15 @@ export class Avatar {
 
     const tanY = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
     const tanX = tanY * this.camera.aspect;
-    const distance = Math.max(f.spanY / 2 / tanY, f.spanX / 2 / tanX);
+    const spanY = f.topOffset - f.bottomOffset;
+    const distance = Math.max(spanY / 2 / tanY, f.spanX / 2 / tanX);
 
+    // Anchor the BOTTOM edge, so any slack the width fit adds becomes headroom
+    // rather than legs.
     const halfHeight = distance * tanY;
-    const centre = f.waist
+    const centre = f.anchor
       .clone()
-      .addScaledVector(f.up, halfHeight - f.spanY * WAIST_MARGIN);
+      .addScaledVector(f.up, f.bottomOffset + halfHeight);
 
     this.camera.position.copy(centre).addScaledVector(f.forward, distance);
     this.camera.up.copy(f.up);
@@ -591,8 +750,22 @@ export class Avatar {
     // queue only makes sense sorted by when each sign is due.
     this.queue.sort((a, b) => a.mediaTime - b.mediaTime);
     if (this.queue.length > MAX_QUEUE) {
+      // Trim the FURTHEST-FUTURE signs, which are at the end of a
+      // soonest-first queue.
+      //
+      // This used to splice from the front, which discarded precisely the
+      // signs about to play and kept ones the video would not reach for
+      // minutes. On any video with a caption track that was fatal rather than
+      // merely lossy: `captions.ts` emits every cue the moment the track
+      // loads, so several hundred signs arrive before playback has moved at
+      // all, the cap is exceeded immediately, and every due sign is thrown
+      // away. `takeFreshest` then reads a queue head whose mediaTime is still
+      // in the future, returns null on every frame, and the avatar never
+      // starts signing — while transcription, gloss lookup and clip fetching
+      // all keep working perfectly, which is what made it look like a
+      // rendering fault.
       this.stats.dropped += this.queue.length - MAX_QUEUE;
-      this.queue.splice(0, this.queue.length - MAX_QUEUE);
+      this.queue.length = MAX_QUEUE;
     }
   }
 
@@ -683,7 +856,12 @@ export class Avatar {
     if (this.playing && !this.current) {
       const next = this.takeFreshest();
       if (next) {
-        this.blendMsLeft = next.fingerspell ? FINGERSPELL_BLEND_MS : BLEND_MS;
+        // Coming from rest, not from another sign. The hands have to travel
+        // from the waiting posture into signing space, which a human
+        // interpreter does over roughly a third of a second — doing it in the
+        // 140 ms used between two signs reads as a flinch.
+        this.blendMsLeft = next.fingerspell ? FINGERSPELL_BLEND_MS : ENTRY_BLEND_MS;
+        this.blendMsTotal = this.blendMsLeft;
         this.current = { clip: next.clip, elapsedMs: 0, fingerspell: next.fingerspell };
       }
     }
@@ -698,14 +876,15 @@ export class Avatar {
         const next = this.playing ? this.takeFreshest() : null;
         if (next) {
           this.blendMsLeft = next.fingerspell ? FINGERSPELL_BLEND_MS : BLEND_MS;
+          this.blendMsTotal = this.blendMsLeft;
           this.current = { clip: next.clip, elapsedMs: 0, fingerspell: next.fingerspell };
-          this.applyFrame(next.clip, 0, dt);
+          this.applyFrame(next.clip, 0, dt, step);
         } else {
           this.current = null;
           this.restPose();
         }
       } else {
-        this.applyFrame(this.current.clip, this.current.elapsedMs, dt);
+        this.applyFrame(this.current.clip, this.current.elapsedMs, dt, step);
       }
     } else if (this.placeholderMsLeft > 0) {
       this.placeholderMsLeft -= step;
@@ -770,7 +949,20 @@ export class Avatar {
    * data plays smoothly at display rate, then hands the blended keypoints to
    * the retargeter, which converts positions into bone rotations.
    */
-  private applyFrame(clip: SignClip, elapsed: number, dt: number): void {
+  private applyFrame(
+    clip: SignClip,
+    elapsed: number,
+    dt: number,
+    /**
+     * Clip time advanced this frame — `dt` scaled by the playback rate.
+     *
+     * Separate from `dt` because the two answer different questions. Easing is
+     * about the display, so it uses wall-clock `dt` and stays frame-rate
+     * independent. The finger speed limit is about the performance, so it uses
+     * clip time and lets a clip played at 2.2x move 2.2x faster.
+     */
+    clipStep: number,
+  ): void {
     if (!this.retargeter) return;
     const frames = clip.frames;
     if (frames.length === 0) return;
@@ -818,7 +1010,7 @@ export class Avatar {
     // During a handover, ease into the new sign's pose rather than snapping.
     // Smoothstep, because a linear blend reads as a twitch over 140 ms.
     if (this.blendMsLeft > 0) {
-      const u = 1 - this.blendMsLeft / BLEND_MS;
+      const u = 1 - this.blendMsLeft / this.blendMsTotal;
       const blend = u * u * (3 - 2 * u);
       mix *= blend;
       fingerMix *= blend;
@@ -832,7 +1024,12 @@ export class Avatar {
     const posed =
       clip.source === "openpose-2d" ? addSigningDepth(blended) : blended;
 
-    this.retargeter.apply(posed, mix, fingerMix);
+    // The finger speed limit is given CLIP time, not wall time. It bounds how
+    // fast a finger moves relative to the recorded performance, so a clip played
+    // faster is allowed to move proportionally faster — which is the point of
+    // playing fingerspelling at 2.2x. Passing wall-clock dt instead would have
+    // the limit silently undo that speed-up. See MAX_FINGER_DEG_PER_S.
+    this.retargeter.apply(posed, mix, fingerMix, clipStep);
   }
 
   /** The pose the model was authored in — used between signs and when idle. */

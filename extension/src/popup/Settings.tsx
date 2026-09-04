@@ -13,8 +13,6 @@ import {
   SIGN_LANGUAGES,
   type AvatarBackdrop,
   type AvatarContrast,
-  type Diagnostics as DiagnosticsData,
-  type ExtensionMessage,
   type ExtensionSettings,
   type SignLanguage,
 } from "../shared/types";
@@ -23,11 +21,18 @@ import { RIGS } from "../content/rigs";
 
 const MINI_METER_HEIGHTS = [0.5, 0.9, 0.65, 1, 0.55];
 
-const BACKDROPS: { id: AvatarBackdrop; label: string; fill: string }[] = [
-  { id: "studio", label: "Studio", fill: "oklch(0.88 0.012 78)" },
-  { id: "light", label: "Plain white", fill: "oklch(0.99 0.003 80)" },
-  { id: "dark", label: "Plain dark", fill: "oklch(0.24 0.012 62)" },
-  { id: "none", label: "None", fill: "transparent" },
+/**
+ * `fill` is the plate colour, `ink` the signer drawn on it — the same pairing
+ * the overlay uses, so the preview is the real thing in miniature rather than a
+ * swatch the reader has to imagine a signer against.
+ */
+const BACKDROPS: { id: AvatarBackdrop; label: string; fill: string; ink: string }[] = [
+  { id: "studio", label: "Studio", fill: "oklch(0.88 0.012 78)", ink: "oklch(0.35 0.014 62)" },
+  { id: "light", label: "Plain white", fill: "oklch(0.99 0.003 80)", ink: "oklch(0.3 0.014 62)" },
+  { id: "dark", label: "Plain dark", fill: "oklch(0.24 0.012 62)", ink: "oklch(0.95 0.006 80)" },
+  // No plate: the signer is drawn straight onto the video, so it needs the
+  // light ink and the shadow the overlay gives it there.
+  { id: "none", label: "None", fill: "transparent", ink: "oklch(0.99 0.005 80)" },
 ];
 
 type PageId =
@@ -37,7 +42,6 @@ type PageId =
   | "placement"
   | "look"
   | "playback"
-  | "status"
   | "privacy";
 
 const PAGES: { id: PageId; label: string; blurb: string }[] = [
@@ -47,7 +51,6 @@ const PAGES: { id: PageId; label: string; blurb: string }[] = [
   { id: "placement", label: "Placement", blurb: "Where the interpreter sits on the video." },
   { id: "look", label: "Look", blurb: "Backdrop and contrast, for legible handshapes." },
   { id: "playback", label: "Playback", blurb: "Signing pace and captions." },
-  { id: "status", label: "Status", blurb: "What each stage of the pipeline is doing." },
   { id: "privacy", label: "Privacy", blurb: "What is sent, kept, and reset." },
 ];
 
@@ -263,7 +266,6 @@ export function Settings({
                     />
                     <div className="row-main">
                       <div className="row-title">{rig.label}</div>
-                      <div className="row-sub">{rig.links.length} tracked joints</div>
                     </div>
                     <div className="row-dot" />
                   </label>
@@ -344,10 +346,19 @@ export function Settings({
                     }`}
                     onClick={() => update({ avatarBackdrop: bd.id })}
                   >
-                    <div
-                      className={`backdrop-swatch${bd.id === "none" ? " is-none" : ""}`}
-                      style={bd.id === "none" ? undefined : { background: bd.fill }}
-                    />
+                    {/* Striped ground = the video; the inset plate = what this
+                        option actually draws over it. `none` draws no plate, so
+                        the stripes show through exactly as the video would. */}
+                    <div className="backdrop-swatch">
+                      <div
+                        className={`backdrop-plate${bd.id === "none" ? " is-none" : ""}`}
+                        style={bd.id === "none" ? undefined : { background: bd.fill }}
+                      >
+                        <span style={{ color: bd.ink }} aria-hidden="true">
+                          ⣿
+                        </span>
+                      </div>
+                    </div>
                     <div className="backdrop-label">{bd.label}</div>
                   </button>
                 ))}
@@ -417,8 +428,6 @@ export function Settings({
               <Toggles settings={settings} update={update} ids={["showTranscript"]} />
             </>
           )}
-
-          {page === "status" && <StatusPage connected={connected} />}
 
           {page === "privacy" && (
             <>
@@ -524,134 +533,3 @@ function Toggles({
   );
 }
 
-/**
- * Live pipeline readout.
- *
- * A silent avatar has half a dozen indistinguishable causes, and every one of
- * them used to present as an empty rectangle. This walks the stages in order so
- * the first one showing nothing is the one at fault.
- */
-function StatusPage({ connected }: { connected: boolean }) {
-  const [data, setData] = useState<DiagnosticsData | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const poll = () => {
-      chrome.runtime
-        .sendMessage({ type: "GET_DIAGNOSTICS" } satisfies ExtensionMessage)
-        .then((res: ExtensionMessage | undefined) => {
-          if (!cancelled && res?.type === "DIAGNOSTICS") setData(res.diagnostics);
-        })
-        .catch(() => {
-          /* worker asleep — the next tick will get it */
-        });
-    };
-    poll();
-    const timer = window.setInterval(poll, 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  if (!data) return <div className="status-empty">Reading pipeline…</div>;
-
-  const a = data.avatar;
-  // Ordered as the audio actually flows. The first bad row is the culprit.
-  const stages: { label: string; ok: boolean; value: string }[] = [
-    {
-      label: "1 · Capture",
-      ok: data.captureActive,
-      value: data.captureActive ? `${data.audioFrames} frames` : "not capturing",
-    },
-    {
-      label: "2 · Cloud",
-      ok: data.cloudConnected,
-      value: data.cloudConnected ? `${data.audioSent} frames sent` : "disconnected",
-    },
-    {
-      label: "3 · Transcript",
-      ok: data.transcripts > 0,
-      value: data.transcripts > 0 ? `${data.transcripts} final` : "nothing yet",
-    },
-    {
-      label: "4 · Signs matched",
-      ok: data.signIds > 0,
-      value: data.signIds > 0 ? `${data.signIds} ids` : "no words matched",
-    },
-    {
-      // Between "signs were emitted" and "the overlay has them" sits the relay
-      // to the page — the one hop that can fail while every other row is green.
-      label: "5 · Page relay",
-      ok: data.contentReachable,
-      value: data.contentReachable ? "delivered" : "no content script — reload the page",
-    },
-    {
-      label: "6 · Overlay",
-      ok: a !== null,
-      value: a ? "mounted" : "not on this tab",
-    },
-    {
-      label: "7 · Model",
-      ok: Boolean(a?.rigLoaded),
-      value: a?.rigError ? "failed" : a?.rigLoaded ? a.rigId : "loading…",
-    },
-    {
-      label: "8 · Skeleton",
-      // A rig map that matches nothing is the failure that cost the most time:
-      // it renders a motionless avatar and says nothing anywhere.
-      ok: Boolean(a && a.bonesDriven > 0 && a.bonesMissing === 0),
-      value: a ? `${a.bonesDriven} driven, ${a.bonesMissing} missing` : "—",
-    },
-    {
-      label: "9 · Clips",
-      ok: Boolean(a && a.clipsPlayed > 0),
-      value: a ? `${a.clipsPlayed} played, ${a.clipsMissing} missing` : "—",
-    },
-  ];
-
-  return (
-    <>
-      <div className="status-list">
-        {stages.map((s) => (
-          <div key={s.label} className="status-row">
-            <span className={`status-dot${s.ok ? " is-ok" : ""}`} />
-            <div className="status-label">{s.label}</div>
-            <div className="status-value">{s.value}</div>
-          </div>
-        ))}
-      </div>
-
-      {data.captureError && <div className="error-note">{data.captureError}</div>}
-      {data.captureWarning && <div className="error-note">{data.captureWarning}</div>}
-      {a?.rigError && <div className="error-note">Model: {a.rigError}</div>}
-
-      <div className="status-meta">
-        <div>
-          <span className="status-meta-key">level</span> {data.lastRms.toFixed(3)}
-          {/* Name how long it has been flat: one silent frame is a pause
-              between words, thirty seconds of them is a broken capture. */}
-          {data.captureActive &&
-            data.audioSilentMs > 0 &&
-            ` — silence for ${Math.round(data.audioSilentMs / 1000)}s`}
-        </div>
-        <div>
-          <span className="status-meta-key">last sign</span> {data.lastSignId || "—"}
-        </div>
-        <div className="status-transcript">
-          <span className="status-meta-key">last words</span> {data.lastTranscript || "—"}
-        </div>
-      </div>
-
-      {!connected && (
-        <div className="note note-tight">
-          <div className="note-rule" />
-          <div className="note-text">
-            Audio is disconnected, so every stage below capture will stay empty. Connect it on
-            the Audio page.
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
